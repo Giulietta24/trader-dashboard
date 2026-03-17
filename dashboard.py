@@ -50,13 +50,6 @@ def data_source_badge():
 
 # ── PAGE CONFIG ────────────────────────────────────────────────────────────────
 st.set_page_config(
-
-st.markdown("""
-<style>
-[data-testid="collapsedControl"] {display: none}
-</style>
-""", unsafe_allow_html=True)
-    
     page_title="Trader Intelligence Dashboard",
     page_icon="📊",
     layout="wide",
@@ -69,6 +62,8 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 .block-container{padding:1rem 1.5rem 2rem;max-width:1600px;}
+[data-testid="collapsedControl"]{display:none!important;}
+section[data-testid="stSidebar"]{display:none!important;}
 .sec{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
      color:#9ca3af;margin:1.4rem 0 .7rem;border-bottom:1px solid #e5e7eb;padding-bottom:5px;}
 .card{background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;}

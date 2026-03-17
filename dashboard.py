@@ -50,6 +50,13 @@ def data_source_badge():
 
 # ── PAGE CONFIG ────────────────────────────────────────────────────────────────
 st.set_page_config(
+
+st.markdown("""
+<style>
+[data-testid="collapsedControl"] {display: none}
+</style>
+""", unsafe_allow_html=True)
+    
     page_title="Trader Intelligence Dashboard",
     page_icon="📊",
     layout="wide",

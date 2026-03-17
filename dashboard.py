@@ -287,13 +287,10 @@ with st.sidebar:
 # ── HEADER ─────────────────────────────────────────────────────────────────────
 col_h1, col_h2 = st.columns([4, 1])
 with col_h1:
-    st.markdown(f"""
-    <div style="font-size:26px;font-weight:700;color:#111827;">📊 Trader Intelligence Dashboard</div>
-    <div style="font-size:12px;color:#9ca3af;margin-top:3px;">
-      Live market data · {datetime.now().strftime('%A %d %B %Y · %H:%M')} · Yahoo Finance
-    </div>""", unsafe_allow_html=True)
+    st.title("📊 Trader Intelligence Dashboard")
+    st.caption(f"Live market data · {datetime.now().strftime('%A %d %B %Y · %H:%M')} · Yahoo Finance")
 with col_h2:
-    st.markdown(f'<div style="text-align:right;padding-top:10px;">{data_source_badge()}</div>',
+    st.markdown(f'<div style="text-align:right;padding-top:20px;">{data_source_badge()}</div>',
                 unsafe_allow_html=True)
 
 st.markdown("---")

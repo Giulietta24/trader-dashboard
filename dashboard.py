@@ -944,19 +944,22 @@ if run or ticker_input:
                     </div>""", unsafe_allow_html=True)
 
             if sig["close_series"]:
+                prices = sig["close_series"]
+                mn_p = min(prices) * 0.98
+                mx_p = max(prices) * 1.02
                 fig_scr = go.Figure()
                 fig_scr.add_trace(go.Scatter(
-                    y=sig["close_series"], mode="lines", name=sym,
+                    y=prices, mode="lines", name=sym,
                     line=dict(color="#2563eb", width=2),
                     fill="tozeroy", fillcolor="rgba(37,99,235,0.06)",
                     hovertemplate="$%{y:.2f}<extra></extra>"
                 ))
                 fig_scr.update_layout(
                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#ffffff",
-                    margin=dict(l=50, r=20, t=10, b=30), height=200,
+                    margin=dict(l=60, r=20, t=10, b=30), height=220,
                     font=dict(family="Inter", color="#9ca3af", size=10),
                     xaxis=dict(showgrid=False, showticklabels=False, title="60 trading days"),
-                    yaxis=dict(gridcolor="#f3f4f6", tickprefix="$"),
+                    yaxis=dict(gridcolor="#f3f4f6", tickprefix="$", range=[mn_p, mx_p]),
                     showlegend=False, hovermode="x unified"
                 )
                 st.plotly_chart(fig_scr, use_container_width=True, config={"displayModeBar": False})

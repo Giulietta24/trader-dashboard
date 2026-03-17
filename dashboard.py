@@ -175,6 +175,44 @@ def get_sectors():
             pass
     return out
 
+@st.cache_data(ttl=3600)  # refresh every hour
+def get_earnings_calendar(key: str) -> list:
+    """Fetch upcoming earnings from Finnhub for the next 60 days."""
+    try:
+        today = datetime.now()
+        date_from = today.strftime("%Y-%m-%d")
+        date_to   = (today + pd.Timedelta(days=60)).strftime("%Y-%m-%d")
+        r = requests.get(
+            f"https://finnhub.io/api/v1/calendar/earnings"
+            f"?from={date_from}&to={date_to}&token={key}",
+            timeout=8
+        )
+        data = r.json().get("earningsCalendar", [])
+        # Filter to well-known large caps only, sort by date
+        watchlist = {"AAPL","MSFT","GOOGL","AMZN","META","NVDA","TSLA","AMD",
+                     "NFLX","ORCL","INTC","QCOM","CRM","AVGO","JPM","GS","BAC",
+                     "WMT","HD","V","MA","UNH","LLY","JNJ","XOM","CVX"}
+        out = []
+        for e in data:
+            sym = e.get("symbol","")
+            if sym in watchlist:
+                date_str = e.get("date","")
+                try:
+                    dt = datetime.strptime(date_str, "%Y-%m-%d")
+                    out.append({
+                        "symbol": sym,
+                        "date":   dt.strftime("%b %d"),
+                        "hour":   e.get("hour",""),  # bmo=before open, amc=after close
+                    })
+                except:
+                    pass
+        # Sort by date, take first 6
+        out.sort(key=lambda x: datetime.strptime(x["date"], "%b %d"))
+        return out[:6]
+    except:
+        return []
+
+
 @st.cache_data(ttl=600)
 def compute_signals(sym):
     d = get_quote(sym)
@@ -681,16 +719,37 @@ with sc4:
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">📅 Catalyst Calendar</div>', unsafe_allow_html=True)
 
-cats = [("FOMC","Mar 18","Rate Decision","HIGH","warn"),
-        ("GDP", "Mar 27","Q4 Final",     "MED", "neu"),
-        ("NFP", "Apr 4", "Jobs Report",  "HIGH","warn"),
-        ("CPI", "Apr 10","Inflation",    "HIGH","warn"),
-        ("AMZN","Apr 23","Earnings",     "HIGH","buy"),
-        ("MSFT","Apr 29","Earnings",     "HIGH","buy"),
-        ("GOOGL","Apr 28","Earnings",    "HIGH","buy"),
-        ("NVDA","May 27","Earnings",     "HIGH","buy")]
+# Static macro events (always shown)
+macro_events = [
+    ("FOMC", "Mar 18", "Rate Decision", "HIGH", "warn"),
+    ("GDP",  "Mar 27", "Q4 Final",      "MED",  "neu"),
+    ("NFP",  "Apr 4",  "Jobs Report",   "HIGH", "warn"),
+    ("CPI",  "Apr 10", "Inflation",     "HIGH", "warn"),
+]
 
-cc = st.columns(len(cats))
+# Live earnings from Finnhub if key available, else static fallback
+fh_key = _finnhub_key()
+if fh_key:
+    live_earnings = get_earnings_calendar(fh_key)
+    earnings_events = [
+        (e["symbol"], e["date"],
+         f"Earnings ({'Pre-mkt' if e['hour']=='bmo' else 'After close' if e['hour']=='amc' else 'TBC'})",
+         "HIGH", "buy")
+        for e in live_earnings
+    ]
+    source_note = "Earnings dates: Finnhub (live)"
+else:
+    earnings_events = [
+        ("AMZN",  "Apr 23", "Earnings", "HIGH", "buy"),
+        ("MSFT",  "Apr 29", "Earnings", "HIGH", "buy"),
+        ("GOOGL", "Apr 28", "Earnings", "HIGH", "buy"),
+        ("NVDA",  "May 27", "Earnings", "HIGH", "buy"),
+    ]
+    source_note = "Earnings dates: estimated — add Finnhub key for live dates"
+
+cats = macro_events + earnings_events
+
+cc = st.columns(min(len(cats), 8))
 for col, (t, d, typ, imp, c) in zip(cc, cats):
     bg = "#f0fdf4" if c=="buy" else "#fffbeb" if c=="warn" else "#f9fafb"
     tc = "#15803d" if c=="buy" else "#b45309" if c=="warn" else "#6b7280"
@@ -705,6 +764,8 @@ for col, (t, d, typ, imp, c) in zip(cc, cats):
           <div style="font-size:10px;color:{tc};">{typ}</div>
           <span style="background:{ib};color:{ic};font-size:9px;padding:1px 5px;border-radius:2px;font-weight:600;">{imp}</span>
         </div>""", unsafe_allow_html=True)
+
+st.caption(source_note)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 9 — SHORT SQUEEZE RADAR

@@ -80,6 +80,14 @@ section[data-testid="stSidebar"]{display:none!important;}
 .sig{background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:8px;text-align:center;}
 .sig-n{font-size:9px;color:#9ca3af;letter-spacing:.04em;margin-bottom:2px;}
 .sig-v{font-size:11px;font-weight:600;color:#111827;}
+.tip-wrap{position:relative;display:inline-block;cursor:pointer;}
+.tip-wrap .tip-box{visibility:hidden;opacity:0;background:#1e293b;color:#f1f5f9;font-size:11px;
+  line-height:1.5;padding:8px 10px;border-radius:6px;width:220px;position:absolute;
+  bottom:125%;left:50%;transform:translateX(-50%);z-index:999;pointer-events:none;
+  transition:opacity .2s;font-weight:400;}
+.tip-wrap:hover .tip-box{visibility:visible;opacity:1;}
+.tip-wrap .tip-box::after{content:"";position:absolute;top:100%;left:50%;margin-left:-5px;
+  border:5px solid transparent;border-top-color:#1e293b;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -141,9 +149,22 @@ def get_macro():
 
 @st.cache_data(ttl=300)
 def get_commodities():
-    syms = {"GC=F": ("Gold", "/oz"), "SI=F": ("Silver", "/oz"), "HG=F": ("Copper", "/lb"),
-            "CL=F": ("WTI Crude", "/bbl"), "BZ=F": ("Brent", "/bbl"), "NG=F": ("Nat Gas", "/MMBtu"),
-            "ZW=F": ("Wheat", "¢/bu"), "ZC=F": ("Corn", "¢/bu")}
+    syms = {
+        "GC=F":  ("Gold",      "/oz"),
+        "SI=F":  ("Silver",    "/oz"),
+        "HG=F":  ("Copper",    "/lb"),
+        "CL=F":  ("WTI Crude", "/bbl"),
+        "BZ=F":  ("Brent",     "/bbl"),
+        "NG=F":  ("Nat Gas",   "/MMBtu"),
+        "ZW=F":  ("Wheat",     "¢/bu"),
+        "ZC=F":  ("Corn",      "¢/bu"),
+        "ZS=F":  ("Soybeans",  "¢/bu"),
+        "SB=F":  ("Sugar",     "¢/lb"),
+        "KC=F":  ("Coffee",    "¢/lb"),
+        "CC=F":  ("Cocoa",     "$/t"),
+        "CT=F":  ("Cotton",    "¢/lb"),
+        "LBS=F": ("Lumber",    "$/1k bf"),
+    }
     out = {}
     for sym, (name, unit) in syms.items():
         try:
@@ -456,17 +477,55 @@ with st.spinner("Loading commodities..."):
     comms = get_commodities()
 
 if comms:
-    c_cols = st.columns(len(comms))
-    for col, (name, d) in zip(c_cols, comms.items()):
-        c = clr(d["chg"])
-        with col:
-            st.markdown(f"""
-            <div class="card">
-              <div class="lbl">{name}</div>
-              <div style="font-size:16px;font-weight:700;color:{c};">{fp(d['price'])}</div>
-              <div class="sub" style="color:{c};">{arr(d['chg'])} {d['chg']:+.2f}%</div>
-              <div class="sub">{d['unit']}</div>
-            </div>""", unsafe_allow_html=True)
+    metals_energy = {k: v for k, v in comms.items() if k in ["Gold","Silver","Copper","WTI Crude","Brent","Nat Gas"]}
+    agriculture   = {k: v for k, v in comms.items() if k in ["Wheat","Corn","Soybeans","Sugar","Coffee","Cocoa","Cotton","Lumber"]}
+
+    comm_info = {
+        "Gold":      ("⭐⭐⭐", "Fear gauge. Rises when markets are stressed. Watch vs VIX — both rising = serious risk-off. Affects gold miners (NEM, GOLD)."),
+        "Silver":    ("⭐⭐",   "Follows gold but more volatile. Also industrial metal — rising silver = growth expectations up."),
+        "Copper":    ("⭐⭐⭐", "Called Dr Copper — best economic predictor. Rising = global growth. Falling = slowdown coming. Watch before trading industrials & materials."),
+        "WTI Crude": ("⭐⭐⭐", "Most important commodity. Drives inflation, Fed decisions, energy stocks (XLE), airlines, and consumer spending all at once."),
+        "Brent":     ("⭐⭐⭐", "Global oil benchmark. Moves same as WTI but used for European & Asian pricing. Spike = inflation risk globally."),
+        "Nat Gas":   ("⭐⭐",   "Drives utility stocks (XLU) and European energy. Winter spikes hurt consumer spending. Watch for inflation pass-through."),
+        "Wheat":     ("⭐⭐",   "Key food inflation driver — feeds into CPI. Russia/Ukraine conflict makes this geopolitically sensitive. Affects ADM, BG."),
+        "Corn":      ("⭐⭐",   "Feeds into food & fuel (ethanol) inflation. Rising corn = CPI pressure = Fed watches it. Affects ADM, MOS."),
+        "Soybeans":  ("⭐⭐",   "China demand indicator — China buys huge amounts. Rising soybeans = China economy active. Affects BG, ADM."),
+        "Sugar":     ("⭐",    "Affects consumer staples (Coke, Hershey, Mondelez costs). Limited broader market impact."),
+        "Coffee":    ("⭐",    "Affects Starbucks margins directly. Watch before SBUX earnings. Limited broader impact."),
+        "Cocoa":     ("⭐",    "Affects chocolate makers (Hershey, Mondelez). Currently near record highs — watch consumer staples margins."),
+        "Cotton":    ("⭐",    "Affects apparel costs — Nike, PVH, Hanesbrands. Slow moving, limited direct market impact."),
+        "Lumber":    ("⭐⭐",   "Leading indicator for housing market. Rising lumber = homebuilders active. Watch before DHI, LEN, TOL earnings."),
+    }
+
+    def render_comm_row(items):
+        cols = st.columns(len(items))
+        for col, (name, d) in zip(cols, items.items()):
+            c = clr(d["chg"])
+            info = comm_info.get(name, ("⭐", "Commodity price data."))
+            stars, desc = info
+            with col:
+                st.markdown(f"""
+                <div class="card" style="position:relative;">
+                  <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                    <div class="lbl">{name}</div>
+                    <div class="tip-wrap">
+                      <span style="font-size:11px;color:#9ca3af;cursor:pointer;">ℹ</span>
+                      <div class="tip-box"><b>{name} {stars}</b><br>{desc}</div>
+                    </div>
+                  </div>
+                  <div style="font-size:15px;font-weight:700;color:{c};">{fp(d["price"])}</div>
+                  <div class="sub" style="color:{c};">{arr(d["chg"])} {d["chg"]:+.2f}%</div>
+                  <div class="sub">{d["unit"]}</div>
+                  <div style="font-size:11px;margin-top:3px;">{stars}</div>
+                </div>""", unsafe_allow_html=True)
+
+    if metals_energy:
+        st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-bottom:5px;">Metals & Energy</div>', unsafe_allow_html=True)
+        render_comm_row(metals_energy)
+
+    if agriculture:
+        st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:10px 0 5px;">Agriculture & Softs</div>', unsafe_allow_html=True)
+        render_comm_row(agriculture)
 
 st.markdown("""
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">

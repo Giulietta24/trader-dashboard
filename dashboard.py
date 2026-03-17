@@ -609,9 +609,9 @@ for tab, (_, theme_list) in zip(tabs, themes.items()):
             st.markdown("<hr style='border-color:#f3f4f6;margin:6px 0;'>", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 7 — SENTIMENT
+# SECTION 7 — SENTIMENT (LIVE)
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">😱 Sentiment · Fear/Greed · Smart Money</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">😱 Sentiment · Fear/Greed · Live Analyst Consensus · Insider Activity</div>', unsafe_allow_html=True)
 
 vix_price = macro.get("VIX", {}).get("price", 18)
 fg_score  = max(0, min(100, int(100 - (vix_price - 10) / 35 * 100)))
@@ -619,98 +619,213 @@ fg_lbl    = ("Extreme Greed" if fg_score >= 80 else "Greed" if fg_score >= 65 el
              "Neutral" if fg_score >= 45 else "Fear" if fg_score >= 25 else "Extreme Fear")
 fg_col    = "#16a34a" if fg_score >= 65 else "#d97706" if fg_score >= 45 else "#dc2626"
 
+@st.cache_data(ttl=3600)
+def get_analyst_sentiment(symbols, key):
+    out = {}
+    for sym in symbols:
+        try:
+            r = requests.get(f"https://finnhub.io/api/v1/stock/recommendation?symbol={sym}&token={key}", timeout=5)
+            data = r.json()
+            if data:
+                latest = data[0]
+                buy  = latest.get("buy", 0) + latest.get("strongBuy", 0)
+                hold = latest.get("hold", 0)
+                sell = latest.get("sell", 0) + latest.get("strongSell", 0)
+                total = buy + hold + sell
+                if total > 0:
+                    out[sym] = {"buy": buy, "hold": hold, "sell": sell,
+                                "pct_buy": int(buy / total * 100),
+                                "period": latest.get("period", "")}
+        except:
+            pass
+    return out
+
+@st.cache_data(ttl=3600)
+def get_insider_sentiment(symbols, key):
+    out = {}
+    for sym in symbols:
+        try:
+            r = requests.get(
+                f"https://finnhub.io/api/v1/stock/insider-sentiment?symbol={sym}&from=2025-01-01&token={key}",
+                timeout=5)
+            data = r.json().get("data", [])
+            if data:
+                latest = sorted(data, key=lambda x: x.get("month", 0))[-1]
+                change = latest.get("change", 0)
+                out[sym] = {"change": change,
+                            "direction": "Buying" if change > 0 else "Selling",
+                            "col": "#16a34a" if change > 0 else "#dc2626"}
+        except:
+            pass
+    return out
+
 sc1, sc2, sc3, sc4 = st.columns(4)
+fh_key = _finnhub_key()
+watchlist = ("SPY", "QQQ", "NVDA", "AAPL", "META", "MSFT", "AMZN")
 
 with sc1:
     st.markdown(f"""
     <div class="card">
-      <div class="lbl">Fear & Greed (VIX-derived)</div>
+      <div class="lbl">Fear & Greed — Live (VIX)</div>
       <div style="font-size:34px;font-weight:700;color:{fg_col};">{fg_score}</div>
       <div style="font-size:13px;font-weight:600;color:{fg_col};margin:3px 0;">{fg_lbl}</div>
       <div style="height:8px;border-radius:4px;background:linear-gradient(to right,#dc2626,#d97706,#16a34a);
            position:relative;margin:8px 0 4px;">
-        <div style="position:absolute;top:-3px;left:{fg_score-1}%;width:3px;height:14px;
+        <div style="position:absolute;top:-3px;left:{max(fg_score-1,1)}%;width:3px;height:14px;
              background:#111827;border-radius:2px;"></div>
       </div>
       <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af;">
         <span>Ext Fear</span><span>Fear</span><span>Neutral</span><span>Greed</span><span>Ext</span>
       </div>
+      <div style="font-size:10px;color:#9ca3af;margin-top:8px;">
+        Live from VIX={vix_price:.1f}. Under 20=calm, 20-30=caution, over 30=fear, over 40=panic.
+      </div>
     </div>""", unsafe_allow_html=True)
 
 with sc2:
-    st.markdown("""
-    <div class="card">
-      <div class="lbl">AAII Bull/Bear</div>
-      <div style="display:flex;gap:6px;margin:7px 0;">
-        <div style="flex:1;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:5px;padding:7px;text-align:center;">
-          <div style="font-size:9px;color:#15803d;font-weight:600;">BULL</div>
-          <div style="font-size:16px;font-weight:700;color:#16a34a;">47%</div>
-        </div>
-        <div style="flex:1;background:#f9fafb;border:1px solid #e5e7eb;border-radius:5px;padding:7px;text-align:center;">
-          <div style="font-size:9px;color:#6b7280;font-weight:600;">NEUT</div>
-          <div style="font-size:16px;font-weight:700;color:#6b7280;">27%</div>
-        </div>
-        <div style="flex:1;background:#fef2f2;border:1px solid #fecaca;border-radius:5px;padding:7px;text-align:center;">
-          <div style="font-size:9px;color:#b91c1c;font-weight:600;">BEAR</div>
-          <div style="font-size:16px;font-weight:700;color:#dc2626;">26%</div>
-        </div>
-      </div>
-      <div style="font-size:11px;color:#6b7280;">Spread: <span style="color:#16a34a;font-weight:700;">+21pp</span> — Bullish signal</div>
-    </div>""", unsafe_allow_html=True)
+    if fh_key:
+        with st.spinner("Loading analyst ratings..."):
+            analyst = get_analyst_sentiment(watchlist, fh_key)
+        st.markdown('<div class="card"><div class="lbl">Analyst Consensus — Live (Finnhub)</div><div style="margin-top:6px;">', unsafe_allow_html=True)
+        if analyst:
+            for sym, d in list(analyst.items())[:6]:
+                bw = d["pct_buy"]
+                bc = "#16a34a" if bw >= 60 else "#d97706" if bw >= 40 else "#dc2626"
+                st.markdown(f"""
+                <div style="margin-bottom:7px;">
+                  <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:2px;">
+                    <span style="font-weight:700;color:#374151;">{sym}</span>
+                    <span style="color:{bc};font-weight:600;">{bw}% Buy &nbsp;·&nbsp; {d['buy']}B / {d['hold']}H / {d['sell']}S</span>
+                  </div>
+                  <div style="height:5px;background:#f3f4f6;border-radius:3px;overflow:hidden;">
+                    <div style="height:5px;width:{bw}%;background:{bc};border-radius:3px;"></div>
+                  </div>
+                </div>""", unsafe_allow_html=True)
+            st.markdown('<div style="font-size:10px;color:#9ca3af;margin-top:4px;">B=Buy H=Hold S=Sell · Source: Wall St analysts via Finnhub</div>', unsafe_allow_html=True)
+        st.markdown('</div></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="card"><div class="lbl">Analyst Consensus</div><div style="font-size:12px;color:#9ca3af;padding:8px 0;">Add Finnhub key to Streamlit secrets for live analyst ratings.</div></div>', unsafe_allow_html=True)
 
 with sc3:
-    st.markdown("""
-    <div class="card">
-      <div class="lbl">Options Flow</div>
-      <div style="margin-top:5px;">
-        <div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid #f3f4f6;">
-          <span style="color:#6b7280;">Put/Call Ratio</span>
-          <span style="color:#16a34a;font-weight:600;">0.81 · Bullish</span>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid #f3f4f6;">
-          <span style="color:#6b7280;">COT Net Longs</span>
-          <span style="color:#16a34a;font-weight:600;">+124k</span>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid #f3f4f6;">
-          <span style="color:#6b7280;">Dark Pool (DIX)</span>
-          <span style="color:#16a34a;font-weight:600;">46.8% · Bull</span>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;">
-          <span style="color:#6b7280;">GEX Gamma</span>
-          <span style="color:#d97706;font-weight:600;">+$4.2B Pinning</span>
-        </div>
-      </div>
-    </div>""", unsafe_allow_html=True)
+    if fh_key:
+        with st.spinner("Loading insider activity..."):
+            insider = get_insider_sentiment(watchlist, fh_key)
+        st.markdown('<div class="card"><div class="lbl">Insider Transactions — Live (Finnhub)</div><div style="margin-top:6px;">', unsafe_allow_html=True)
+        if insider:
+            for sym, d in list(insider.items())[:6]:
+                st.markdown(f"""
+                <div style="display:flex;justify-content:space-between;align-items:center;
+                     padding:5px 0;border-bottom:1px solid #f3f4f6;font-size:12px;">
+                  <span style="font-weight:700;color:#374151;">{sym}</span>
+                  <span style="color:{d['col']};font-weight:600;">{d['direction']}</span>
+                </div>""", unsafe_allow_html=True)
+            st.markdown('<div style="font-size:10px;color:#9ca3af;margin-top:6px;">Company insiders buying = bullish signal. Selling = could be profit-taking or caution.</div>', unsafe_allow_html=True)
+        st.markdown('</div></div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<div class="card"><div class="lbl">Insider Transactions</div><div style="font-size:12px;color:#9ca3af;padding:8px 0;">Add Finnhub key to Streamlit secrets for live insider transaction data.</div></div>', unsafe_allow_html=True)
 
-with sc4:
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 7b — AI OPTIONS FLOW ANALYSIS (Anthropic Claude)
+# ══════════════════════════════════════════════════════════════════════════════
+st.markdown('<div class="sec">🤖 AI Options Flow Analysis — Powered by Claude</div>', unsafe_allow_html=True)
+
+def _anthropic_key():
+    try:
+        return st.secrets.get("ANTHROPIC_API_KEY") or st.secrets.get("anthropic_api_key")
+    except:
+        return None
+
+@st.cache_data(ttl=1800)  # refresh every 30 min
+def get_ai_options_analysis(spy_chg, qqq_chg, vix, spy_1m, qqq_1m, iwm_1m, sector_summary):
+    """Use Claude to generate options flow analysis from live market data."""
+    key = _anthropic_key()
+    if not key:
+        return None
+    try:
+        prompt = f"""You are an expert options trader. Based on these LIVE market conditions, analyze what the smart money options flow is likely showing and what trades to watch.
+
+LIVE MARKET DATA:
+- SPY today: {spy_chg:+.2f}% | 1-month: {spy_1m:+.1f}%
+- QQQ today: {qqq_chg:+.2f}% | 1-month: {qqq_1m:+.1f}%
+- IWM 1-month: {iwm_1m:+.1f}%
+- VIX: {vix:.1f} ({"complacent - low fear" if vix < 18 else "caution zone" if vix < 25 else "elevated fear" if vix < 35 else "panic"})
+- Sector performance: {sector_summary}
+
+Provide a SHORT options flow analysis (max 120 words) covering:
+1. What options activity the current market setup typically attracts (calls vs puts, which sectors)
+2. One specific options strategy that fits current conditions (e.g. covered calls, CSPs, call debit spreads)
+3. What to watch for in the next 2 weeks
+
+Be specific, practical, and plain English. No jargon without explanation. End with one key risk to watch."""
+
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": "claude-sonnet-4-20250514", "max_tokens": 300,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=15
+        )
+        data = r.json()
+        text = data.get("content", [{}])[0].get("text", "")
+        return text.strip() if text else None
+    except:
+        return None
+
+ant_key = _anthropic_key()
+if ant_key:
+    # Build sector summary from live data
+    sector_summary = ""
+    if sectors:
+        top = sorted(sectors.items(), key=lambda x: -x[1].get("1d", 0))[:3]
+        bot = sorted(sectors.items(), key=lambda x: x[1].get("1d", 0))[:2]
+        sector_summary = f"Leading: {', '.join([s for s,_ in top])} | Lagging: {', '.join([s for s,_ in bot])}"
+    else:
+        sector_summary = "Data loading"
+
+    spy_d  = idx.get("SPY", {})
+    qqq_d  = idx.get("QQQ", {})
+    iwm_d  = idx.get("IWM", {})
+
+    with st.spinner("Claude is analysing current options flow..."):
+        ai_analysis = get_ai_options_analysis(
+            spy_chg=spy_d.get("chg1d", 0),
+            qqq_chg=qqq_d.get("chg1d", 0),
+            vix=vix_price,
+            spy_1m=spy_d.get("chg1m", 0),
+            qqq_1m=qqq_d.get("chg1m", 0),
+            iwm_1m=iwm_d.get("chg1m", 0),
+            sector_summary=sector_summary
+        )
+
+    if ai_analysis:
+        st.markdown(f"""
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:16px 18px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+            <span style="font-size:16px;">🤖</span>
+            <span style="font-size:12px;font-weight:700;color:#1d4ed8;">Claude AI · Options Flow Analysis · Live market data</span>
+            <span style="font-size:10px;color:#93c5fd;margin-left:auto;">Refreshes every 30 min</span>
+          </div>
+          <div style="font-size:13px;color:#1e3a5f;line-height:1.7;">{ai_analysis}</div>
+        </div>""", unsafe_allow_html=True)
+
+        # Strategy legend
+        st.markdown("""
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;font-size:11px;">
+          <span style="background:#f0fdf4;color:#15803d;padding:2px 8px;border-radius:4px;font-weight:600;border:1px solid #bbf7d0;">LONG CALL — betting price goes UP</span>
+          <span style="background:#fef2f2;color:#b91c1c;padding:2px 8px;border-radius:4px;font-weight:600;border:1px solid #fecaca;">LONG PUT — betting price goes DOWN</span>
+          <span style="background:#f0fdf4;color:#15803d;padding:2px 8px;border-radius:4px;font-weight:600;border:1px solid #bbf7d0;">CSP — sell put to buy stock cheaper or collect premium</span>
+          <span style="background:#eff6ff;color:#1d4ed8;padding:2px 8px;border-radius:4px;font-weight:600;border:1px solid #bfdbfe;">CC — covered call: sell call against stock you own for income</span>
+          <span style="background:#faf5ff;color:#7e22ce;padding:2px 8px;border-radius:4px;font-weight:600;border:1px solid #e9d5ff;">SPREAD — buy one option, sell another to reduce cost</span>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.warning("AI analysis unavailable — Claude API returned no data")
+else:
     st.markdown("""
-    <div class="card">
-      <div class="lbl">Unusual Options Activity</div>
-      <div style="margin-top:5px;">
-        <div style="display:flex;gap:5px;align-items:center;padding:4px 0;border-bottom:1px solid #f3f4f6;font-size:11px;">
-          <span style="font-weight:700;color:#2563eb;min-width:36px;">NVDA</span>
-          <span style="background:#f0fdf4;color:#15803d;padding:1px 5px;border-radius:2px;font-size:9px;font-weight:600;">CALL</span>
-          <span style="flex:1;color:#9ca3af;">$950C Mar · Sweep</span>
-          <span style="font-weight:600;color:#16a34a;">$2.4M</span>
-        </div>
-        <div style="display:flex;gap:5px;align-items:center;padding:4px 0;border-bottom:1px solid #f3f4f6;font-size:11px;">
-          <span style="font-weight:700;color:#2563eb;min-width:36px;">SPY</span>
-          <span style="background:#f0fdf4;color:#15803d;padding:1px 5px;border-radius:2px;font-size:9px;font-weight:600;">CALL</span>
-          <span style="flex:1;color:#9ca3af;">$600C Apr · Block</span>
-          <span style="font-weight:600;color:#16a34a;">$5.1M</span>
-        </div>
-        <div style="display:flex;gap:5px;align-items:center;padding:4px 0;border-bottom:1px solid #f3f4f6;font-size:11px;">
-          <span style="font-weight:700;color:#2563eb;min-width:36px;">AAPL</span>
-          <span style="background:#fef2f2;color:#b91c1c;padding:1px 5px;border-radius:2px;font-size:9px;font-weight:600;">PUT</span>
-          <span style="flex:1;color:#9ca3af;">$190P Mar · Unusual</span>
-          <span style="font-weight:600;color:#dc2626;">$1.2M</span>
-        </div>
-        <div style="display:flex;gap:5px;align-items:center;padding:4px 0;font-size:11px;">
-          <span style="font-weight:700;color:#2563eb;min-width:36px;">META</span>
-          <span style="background:#f0fdf4;color:#15803d;padding:1px 5px;border-radius:2px;font-size:9px;font-weight:600;">CALL</span>
-          <span style="flex:1;color:#9ca3af;">$620C Apr · Sweep</span>
-          <span style="font-weight:600;color:#16a34a;">$890K</span>
-        </div>
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:14px 18px;">
+      <div style="font-size:13px;color:#6b7280;">
+        Add your <b>ANTHROPIC_API_KEY</b> to Streamlit secrets to enable AI-powered options flow analysis using Claude.<br>
+        <span style="font-size:11px;color:#9ca3af;">You already have this key from your Options Alpha Pro dashboard — just add it here too.</span>
       </div>
     </div>""", unsafe_allow_html=True)
 
@@ -768,26 +883,93 @@ for col, (t, d, typ, imp, c) in zip(cc, cats):
 st.caption(source_note)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 9 — SHORT SQUEEZE RADAR
+# SECTION 9 — SHORT SQUEEZE RADAR (LIVE via yfinance)
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">💥 Short Squeeze Radar</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">💥 Short Squeeze Radar — Live (Yahoo Finance)</div>', unsafe_allow_html=True)
 
-sqz = [("SMCI","28%","8.2d","up"),("MSTR","24%","6.1d","up"),("RIVN","21%","5.8d","neu"),
-       ("GME", "19%","7.4d","up"),("COIN","16%","5.2d","up"),("BYND","35%","12.1d","dn"),
-       ("SOFI","18%","6.8d","up"),("PLTR","11%","4.1d","up")]
-sqz_cols = st.columns(len(sqz))
-for col, (t, si, dtc, rs) in zip(sqz_cols, sqz):
-    bg = "#f0fdf4" if rs=="up" else "#fef2f2" if rs=="dn" else "#f9fafb"
-    tc = "#15803d" if rs=="up" else "#b91c1c" if rs=="dn" else "#6b7280"
-    bc = "#bbf7d0" if rs=="up" else "#fecaca" if rs=="dn" else "#e5e7eb"
-    with col:
-        st.markdown(f"""
-        <div style="background:{bg};border:1px solid {bc};border-radius:6px;padding:8px;text-align:center;">
-          <div style="font-size:13px;font-weight:700;color:{tc};">{t}</div>
-          <div style="font-size:10px;color:{tc};">SI: {si}</div>
-          <div style="font-size:10px;color:{tc};">DTC: {dtc}</div>
-        </div>""", unsafe_allow_html=True)
-st.caption("SI = Short Interest % float · DTC = Days to Cover · Green = positive momentum / potential squeeze")
+@st.cache_data(ttl=43200)  # refresh every 12 hours — FINRA updates twice monthly
+def get_short_interest(symbols):
+    """Fetch live short interest % and days-to-cover from Yahoo Finance."""
+    out = []
+    for sym in symbols:
+        try:
+            info = yf.Ticker(sym).info
+            si_pct = info.get("shortPercentOfFloat", 0)
+            dtc    = info.get("shortRatio", 0)       # days to cover
+            price  = info.get("currentPrice", 0) or info.get("regularMarketPrice", 0)
+            # Get 1-month price change for momentum
+            h = yf.Ticker(sym).history(period="1mo")
+            mom = 0
+            if not h.empty and len(h) >= 2:
+                mom = (h["Close"].iloc[-1] - h["Close"].iloc[0]) / h["Close"].iloc[0] * 100
+            if si_pct and si_pct > 0.05:  # only show if SI > 5%
+                out.append({
+                    "sym": sym,
+                    "si_pct": si_pct * 100,   # convert to %
+                    "dtc": dtc or 0,
+                    "price": price,
+                    "mom": mom,
+                })
+        except:
+            pass
+    # Sort by SI % descending
+    out.sort(key=lambda x: -x["si_pct"])
+    return out
+
+squeeze_watchlist = ["SMCI","MSTR","GME","COIN","RIVN","SOFI","PLTR","BYND","TSLA","AMC","BBAI","SOUN"]
+
+with st.spinner("Loading short interest data..."):
+    sqz_data = get_short_interest(squeeze_watchlist)
+
+if sqz_data:
+    sqz_cols = st.columns(min(len(sqz_data), 8))
+    for col, d in zip(sqz_cols, sqz_data[:8]):
+        # Colour by momentum direction
+        if d["mom"] > 2:
+            bg, tc, bc = "#f0fdf4", "#15803d", "#bbf7d0"
+            status = f"▲ {d['mom']:+.1f}%"
+        elif d["mom"] < -2:
+            bg, tc, bc = "#fef2f2", "#b91c1c", "#fecaca"
+            status = f"▼ {d['mom']:+.1f}%"
+        else:
+            bg, tc, bc = "#f9fafb", "#6b7280", "#e5e7eb"
+            status = "— flat"
+
+        # Squeeze score: high SI + high DTC + positive momentum = high score
+        squeeze_score = min(100, int((d["si_pct"] * 1.5) + (d["dtc"] * 3) + (max(d["mom"], 0) * 0.5)))
+
+        with col:
+            st.markdown(f"""
+            <div style="background:{bg};border:1px solid {bc};border-radius:6px;padding:8px;text-align:center;">
+              <div style="font-size:13px;font-weight:700;color:{tc};">{d['sym']}</div>
+              <div style="font-size:10px;color:{tc};margin-top:2px;">SI: {d['si_pct']:.1f}%</div>
+              <div style="font-size:10px;color:{tc};">DTC: {d['dtc']:.1f}d</div>
+              <div style="font-size:10px;color:{tc};">{status}</div>
+              <div style="font-size:9px;background:{'#dcfce7' if squeeze_score>60 else '#fef9c3' if squeeze_score>35 else '#fee2e2'};
+                   color:{'#15803d' if squeeze_score>60 else '#854d0e' if squeeze_score>35 else '#b91c1c'};
+                   border-radius:3px;padding:1px 4px;margin-top:3px;font-weight:700;">
+                Squeeze: {squeeze_score}
+              </div>
+            </div>""", unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px 14px;margin-top:8px;">
+      <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:6px;">How to read this:</div>
+      <div style="font-size:11px;color:#6b7280;line-height:1.7;">
+        <b style="color:#374151;">SI %</b> = Short Interest: % of all shares currently being shorted. The higher this is, the more "fuel" for a squeeze.<br>
+        <b style="color:#374151;">DTC</b> = Days to Cover: how many days it would take shorts to buy back all their shares. Higher = harder to exit = bigger squeeze potential.<br>
+        <b style="color:#374151;">▲/▼ %</b> = 1-month price momentum. Green means shorts are already losing money — squeeze pressure building.
+      </div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;font-size:11px;">
+        <span style="background:#dcfce7;color:#15803d;padding:2px 8px;border-radius:4px;font-weight:600;">Squeeze 60+ = High risk — watch closely</span>
+        <span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:4px;font-weight:600;">35–60 = On the radar</span>
+        <span style="background:#fee2e2;color:#b91c1c;padding:2px 8px;border-radius:4px;font-weight:600;">Under 35 = Shorts in control</span>
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.caption("Live: Yahoo Finance · FINRA updates twice monthly · Only stocks with SI >5% shown")
+else:
+    st.info("Short interest data loading — try refreshing")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 10 — LIVE STOCK SCREENER

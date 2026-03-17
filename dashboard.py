@@ -528,6 +528,13 @@ if comms:
         render_comm_row(agriculture)
 
 st.markdown("""
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:center;">
+  <span style="font-size:11px;color:#9ca3af;font-weight:600;">Market impact key:</span>
+  <span style="font-size:12px;">⭐⭐⭐ Moves whole market</span>
+  <span style="font-size:12px;">⭐⭐ Sector/inflation relevant</span>
+  <span style="font-size:12px;">⭐ Company specific</span>
+  <span style="font-size:10px;color:#9ca3af;">· Hover ℹ on any card for detail</span>
+</div>
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:7px 14px;font-size:11px;">
     <span style="color:#9ca3af;">OPEC:</span> <span style="color:#d97706;font-weight:600;">Production cuts extended</span>
@@ -546,7 +553,17 @@ st.markdown("""
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">📈 Inflation Signals</div>', unsafe_allow_html=True)
 
-inf_col1, inf_col2 = st.columns(2)
+# Tooltip info for each inflation metric
+inf_tips = {
+    "CPI (YoY)":      "Headline inflation. Above 2% = Fed stays cautious. Rising CPI = bad for bonds, can hurt growth stocks. Watch monthly release.",
+    "Core CPI":       "Strips out food & energy. The Fed focuses here. Sticky Core CPI = rates stay higher for longer = pressure on valuations.",
+    "PCE (YoY)":      "Fed's preferred inflation measure. Lower than CPI but same direction. Drives actual rate decisions more than CPI.",
+    "PPI (YoY)":      "Producer prices — what companies pay. Leads CPI by 3–6 months. Falling PPI = inflation coming down. Bullish signal.",
+    "5Y Breakeven":   "Bond market's inflation expectation. Rising = market thinks inflation stays high. Watch vs Fed target of 2%.",
+    "Fed Funds Rate": "The rate banks charge each other. Drives all borrowing costs. Higher = expensive mortgages, loans, hurts growth stocks.",
+}
+
+inf_col1, inf_col2, inf_col3 = st.columns(3)
 with inf_col1:
     inf_data = [
         ("CPI (YoY)",     "3.2%",       "#d97706", "Above 2% target"),
@@ -557,18 +574,32 @@ with inf_col1:
         ("Fed Funds Rate","3.50–3.75%", "#d97706", "Held steady Jan 2026"),
     ]
     for label, val, c, note in inf_data:
+        tip = inf_tips.get(label, "")
         st.markdown(f"""
         <div style="display:flex;justify-content:space-between;align-items:center;
              padding:8px 0;border-bottom:1px solid #f3f4f6;font-size:12px;">
-          <div>
-            <span style="color:#374151;font-weight:500;">{label}</span><br>
-            <span style="font-size:10px;color:#9ca3af;">{note}</span>
+          <div style="display:flex;align-items:center;gap:5px;">
+            <div>
+              <span style="color:#374151;font-weight:500;">{label}</span><br>
+              <span style="font-size:10px;color:#9ca3af;">{note}</span>
+            </div>
+            <div class="tip-wrap" style="margin-left:3px;">
+              <span style="font-size:11px;color:#9ca3af;">ℹ</span>
+              <div class="tip-box">{tip}</div>
+            </div>
           </div>
           <div style="font-weight:700;font-size:15px;color:{c};">{val}</div>
         </div>""", unsafe_allow_html=True)
 
 with inf_col2:
-    st.markdown('<div class="lbl" style="margin-bottom:10px;">Inflation Pressure by Category</div>', unsafe_allow_html=True)
+    st.markdown('<div class="lbl" style="margin-bottom:10px;">Pressure by Category</div>', unsafe_allow_html=True)
+    cat_tips = {
+        "Shelter":  "Biggest CPI component (35%). Rent & housing costs. Slow to fall — this is why Core CPI stays sticky.",
+        "Services": "Haircuts, insurance, healthcare. Hard to reduce — driven by wages. Sticky = Fed concerned.",
+        "Food":     "Grocery & restaurant prices. Volatile — affected by weather, fuel costs, supply chains.",
+        "Energy":   "Petrol, electricity, gas bills. Very volatile — drops fast when oil falls. Less worrying to Fed.",
+        "Goods":    "Physical products. Has normalised post-COVID supply chain fix. Currently low — good sign.",
+    }
     cat_bars = [("Shelter",  5.8, 8, "#dc2626"),
                 ("Services", 4.9, 8, "#ef4444"),
                 ("Food",     3.4, 8, "#d97706"),
@@ -576,10 +607,17 @@ with inf_col2:
                 ("Goods",    0.4, 8, "#16a34a")]
     for name, v, mx, c in cat_bars:
         pct = int(v / mx * 100)
+        tip = cat_tips.get(name, "")
         st.markdown(f"""
         <div style="margin-bottom:9px;">
-          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px;">
-            <span style="color:#6b7280;">{name}</span>
+          <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px;align-items:center;">
+            <div style="display:flex;align-items:center;gap:4px;">
+              <span style="color:#6b7280;">{name}</span>
+              <div class="tip-wrap">
+                <span style="font-size:10px;color:#9ca3af;">ℹ</span>
+                <div class="tip-box">{tip}</div>
+              </div>
+            </div>
             <span style="font-weight:700;color:{c};">{v}%</span>
           </div>
           <div style="height:6px;background:#f3f4f6;border-radius:3px;overflow:hidden;">
@@ -587,12 +625,21 @@ with inf_col2:
           </div>
         </div>""", unsafe_allow_html=True)
 
+with inf_col3:
     st.markdown("""
-    <div style="margin-top:12px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px 14px;">
-      <div class="lbl" style="margin-bottom:6px;">Fed Rate Path (Market Pricing)</div>
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:12px 14px;margin-bottom:10px;">
+      <div class="lbl" style="margin-bottom:8px;">Fed Rate Path</div>
       <div style="font-size:12px;color:#374151;">Market pricing <span style="color:#d97706;font-weight:600;">0–1 cuts</span> in 2026 — Dec at earliest</div>
-      <div style="font-size:11px;color:#9ca3af;margin-top:3px;">Rate: 3.50–3.75% · 3 cuts made in 2025</div>
-      <div style="font-size:11px;color:#9ca3af;margin-top:2px;">Iran war risk: <span style="color:#dc2626;font-weight:600;">cuts now in doubt</span></div>
+      <div style="font-size:11px;color:#9ca3af;margin-top:4px;">Rate: 3.50–3.75% · 3 cuts made in 2025</div>
+      <div style="font-size:11px;color:#dc2626;font-weight:600;margin-top:3px;">Iran war risk: cuts now in doubt</div>
+    </div>
+    <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:12px 14px;">
+      <div class="lbl" style="margin-bottom:8px;">What this means for stocks</div>
+      <div style="font-size:11px;color:#374151;line-height:1.7;">
+        <span style="color:#dc2626;font-weight:600;">High inflation</span> = Fed holds rates high = expensive borrowing = growth stocks (tech) under pressure<br><br>
+        <span style="color:#16a34a;font-weight:600;">Falling inflation</span> = rate cuts possible = growth stocks rally, bonds rally<br><br>
+        <span style="color:#d97706;font-weight:600;">Sticky Core CPI</span> = the key risk right now — shelter & services won't come down fast
+      </div>
     </div>""", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -605,15 +652,30 @@ with st.spinner("Loading sector data..."):
 
 if sectors:
     hm_cols = st.columns(len(sectors))
+    sector_tips = {
+        "Tech":        "Rising = risk-on, growth in favour. Watch QQQ. Rate-sensitive — falls when yields rise. Leaders: NVDA, MSFT, AAPL.",
+        "Energy":      "Rising = oil/gas prices up, inflation risk. Watch XLE. Benefits oil majors (XOM, CVX). Hurts airlines & consumers.",
+        "Industrials": "Rising = economic growth strong, capex cycle active. Watch GE, CAT, ETN. Good for reshoring plays.",
+        "Financials":  "Rising = banks earning more (high rates help). Watch JPM, GS. Falls when yield curve inverts.",
+        "Comm":        "Communication Services. Rising = META, GOOGL, Netflix in favour. Hybrid of growth & defensive.",
+        "Health":      "Defensive. Rises when market fears slowdown. Watch LLY, UNH, JNJ. GLP-1 drugs driving recent outperformance.",
+        "Disc":        "Consumer Discretionary. Rising = consumers spending freely. Falls first in recession fears. Watch AMZN, TSLA.",
+        "Staples":     "Defensive. Rises when fear increases. Food, drinks, household goods (KO, PG, WMT). Safe haven.",
+        "Utilities":   "Rate-sensitive — falls when yields rise. Defensive. Watch NEE, DUK. Benefits from AI power demand theme.",
+        "R.Estate":    "REITs. Highly rate-sensitive — falls when rates high. Rising = rate cuts expected. Watch VNQ.",
+        "Materials":   "Rising = global growth strong, commodity demand up. Watch copper miners, chemicals. Leads economic cycle.",
+    }
     for col, (name, d) in zip(hm_cols, sectors.items()):
         v = d.get(heat_period, 0)
         bg, tc = hm_clr(v)
         sign = "+" if v >= 0 else ""
+        tip = sector_tips.get(name, "Sector performance vs S&P 500.")
         with col:
             st.markdown(f"""
-            <div class="hm" style="background:{bg};border:1px solid {'#bbf7d0' if v>=0.5 else '#fecaca' if v<=-0.5 else '#e5e7eb'};">
+            <div class="hm tip-wrap" style="background:{bg};border:1px solid {'#bbf7d0' if v>=0.5 else '#fecaca' if v<=-0.5 else '#e5e7eb'};cursor:pointer;">
               <div style="font-size:10px;font-weight:600;color:{tc};">{name}</div>
               <div style="font-size:11px;color:{tc};font-weight:600;margin-top:1px;">{sign}{v:.1f}%</div>
+              <div class="tip-box" style="width:200px;left:-50%;font-size:10px;">{tip}</div>
             </div>""", unsafe_allow_html=True)
     st.markdown("""
     <div style="display:flex;justify-content:space-between;font-size:10px;color:#9ca3af;margin-top:5px;">

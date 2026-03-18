@@ -13,6 +13,12 @@ def _finnhub_key():
     except:
         return None
 
+def _anthropic_key():
+    try:
+        return st.secrets.get("ANTHROPIC_API_KEY") or st.secrets.get("anthropic_api_key")
+    except:
+        return None
+
 @st.cache_data(ttl=60)
 def _fh_quote(sym: str, key: str) -> dict:
     try:
@@ -1347,12 +1353,6 @@ with sc3:
 # SECTION 7b — AI OPTIONS FLOW ANALYSIS (Anthropic Claude)
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🤖 AI Options Flow Analysis — Powered by Claude</div>', unsafe_allow_html=True)
-
-def _anthropic_key():
-    try:
-        return st.secrets.get("ANTHROPIC_API_KEY") or st.secrets.get("anthropic_api_key")
-    except:
-        return None
 
 @st.cache_data(ttl=1800)  # refresh every 30 min
 def get_ai_options_analysis(spy_chg, qqq_chg, vix, spy_1m, qqq_1m, iwm_1m, sector_summary):

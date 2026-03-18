@@ -147,6 +147,121 @@ def get_macro():
             pass
     return out
 
+@st.cache_data(ttl=21600)  # FRED updates monthly — cache 6hrs
+def get_fred_inflation():
+    """Fetch live inflation data from FRED (free, no key needed for read-only)."""
+    series = {
+        "CPIAUCSL":  "CPI (YoY)",
+        "CPILFESL":  "Core CPI",
+        "PCEPI":     "PCE (YoY)",
+        "PPIACO":    "PPI (YoY)",
+        "T5YIE":     "5Y Breakeven",
+        "FEDFUNDS":  "Fed Funds Rate",
+    }
+    out = {}
+    for sid, label in series.items():
+        try:
+            r = requests.get(
+                f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={sid}",
+                timeout=8, headers={"User-Agent": "Mozilla/5.0"}
+            )
+            lines = r.text.strip().split("\n")
+            # Get last two data points to calculate YoY change
+            rows = [l.split(",") for l in lines[1:] if l and "." in l.split(",")[-1]]
+            if len(rows) >= 13:
+                latest_val = float(rows[-1][1])
+                prev_12    = float(rows[-13][1]) if len(rows) >= 13 else latest_val
+                if sid in ("T5YIE", "FEDFUNDS"):
+                    out[label] = {"val": latest_val, "yoy": latest_val - prev_12,
+                                  "date": rows[-1][0]}
+                else:
+                    yoy = ((latest_val - prev_12) / prev_12) * 100
+                    out[label] = {"val": yoy, "yoy": yoy - ((float(rows[-2][1]) - float(rows[-14][1])) / float(rows[-14][1]) * 100 if len(rows)>=14 else 0),
+                                  "date": rows[-1][0]}
+        except:
+            pass
+    return out
+
+
+@st.cache_data(ttl=300)
+def get_cross_market():
+    """Live cross-market ratios and relationships."""
+    pairs = {
+        "XLE/SPY":  ("XLE",  "SPY",  "Energy vs Market",    "Rising = energy leading, inflation risk"),
+        "XLF/SPY":  ("XLF",  "SPY",  "Financials vs Market","Rising = banks healthy, economy strong"),
+        "XLK/SPY":  ("XLK",  "SPY",  "Tech vs Market",      "Rising = growth favoured, risk-on"),
+        "XLP/XLY":  ("XLP",  "XLY",  "Defensives vs Disc",  "Rising = caution, consumers pulling back"),
+        "HYG/LQD":  ("HYG",  "LQD",  "Junk vs Inv Grade",   "Falling = credit stress = recession signal"),
+        "TLT/SPY":  ("TLT",  "SPY",  "Bonds vs Stocks",     "Rising = money fleeing stocks to safety"),
+        "GLD/TLT":  ("GLD",  "TLT",  "Gold vs Bonds",       "Rising = inflation fear over recession fear"),
+        "BTC-USD":  ("BTC-USD", None, "Bitcoin",             "Leads risk appetite — up before stocks, down before stocks"),
+        "EEM/SPY":  ("EEM",  "SPY",  "Emerging vs US",      "Rising = weak dollar, global growth"),
+    }
+    out = {}
+    for key, (sym1, sym2, label, desc) in pairs.items():
+        try:
+            h1 = yf.Ticker(sym1).history(period="3mo")
+            if h1.empty: continue
+            p1 = h1["Close"].iloc[-1]
+            p1_1m = h1["Close"].iloc[-22] if len(h1) >= 22 else h1["Close"].iloc[0]
+            if sym2:
+                h2 = yf.Ticker(sym2).history(period="3mo")
+                if h2.empty: continue
+                p2 = h2["Close"].iloc[-1]
+                p2_1m = h2["Close"].iloc[-22] if len(h2) >= 22 else h2["Close"].iloc[0]
+                ratio_now = p1 / p2
+                ratio_1m  = p1_1m / p2_1m
+                chg = ((ratio_now - ratio_1m) / ratio_1m) * 100
+                out[key] = {"label": label, "desc": desc, "chg": chg,
+                            "val": f"{ratio_now:.3f}", "sym1": sym1, "sym2": sym2}
+            else:
+                chg = ((p1 - p1_1m) / p1_1m) * 100
+                out[key] = {"label": label, "desc": desc, "chg": chg,
+                            "val": f"${p1:,.0f}", "sym1": sym1, "sym2": None}
+        except:
+            pass
+    return out
+
+
+@st.cache_data(ttl=300)
+def get_breadth_indicators():
+    """Market breadth — advance/decline proxies via ETFs."""
+    try:
+        # Use equal-weight vs cap-weight as breadth proxy
+        rsp  = yf.Ticker("RSP").history(period="1mo")   # Equal weight S&P
+        spy  = yf.Ticker("SPY").history(period="1mo")
+        iwm  = yf.Ticker("IWM").history(period="1mo")
+        qqq  = yf.Ticker("QQQ").history(period="1mo")
+        hyg  = yf.Ticker("HYG").history(period="1mo")
+        tlt  = yf.Ticker("TLT").history(period="5d")
+        move_data = yf.Ticker("^MOVE").history(period="5d")
+
+        out = {}
+        if not rsp.empty and not spy.empty:
+            rsp_chg = (rsp["Close"].iloc[-1] - rsp["Close"].iloc[0]) / rsp["Close"].iloc[0] * 100
+            spy_chg = (spy["Close"].iloc[-1] - spy["Close"].iloc[0]) / spy["Close"].iloc[0] * 100
+            out["breadth"] = {"rsp_vs_spy": rsp_chg - spy_chg,
+                              "label": "Breadth (RSP-SPY)",
+                              "note": "Positive = broad rally. Negative = only big caps rising = narrow/weak."}
+        if not hyg.empty:
+            hyg_chg = (hyg["Close"].iloc[-1] - hyg["Close"].iloc[0]) / hyg["Close"].iloc[0] * 100
+            out["credit"] = {"chg": hyg_chg, "price": hyg["Close"].iloc[-1],
+                             "label": "HYG Credit Spread proxy",
+                             "note": "Falling HYG = credit stress = recession warning. Most important leading indicator."}
+        if not tlt.empty:
+            out["tlt"] = {"price": tlt["Close"].iloc[-1],
+                          "chg": (tlt["Close"].iloc[-1] - tlt["Close"].iloc[-2]) / tlt["Close"].iloc[-2] * 100,
+                          "label": "TLT (20Y Treasury)",
+                          "note": "Rising = flight to safety. Falling = inflation fears or strong economy."}
+        if not move_data.empty:
+            out["move"] = {"price": move_data["Close"].iloc[-1],
+                           "label": "MOVE Index (Bond VIX)",
+                           "note": "Bond market fear gauge. Above 130 = serious rate uncertainty. Leads equity VIX."}
+        return out
+    except:
+        return {}
+
+
 @st.cache_data(ttl=300)
 def get_commodities():
     syms = {
@@ -535,18 +650,75 @@ st.markdown("""
   <span style="font-size:12px;">⭐ Company specific</span>
   <span style="font-size:10px;color:#9ca3af;">· Hover ℹ on any card for detail</span>
 </div>
-<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
-  <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:7px 14px;font-size:11px;">
-    <span style="color:#9ca3af;">OPEC:</span> <span style="color:#d97706;font-weight:600;">Production cuts extended</span>
-  </div>
-  <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:7px 14px;font-size:11px;">
-    <span style="color:#9ca3af;">Energy regime:</span> <span style="color:#d97706;font-weight:600;">Supply-constrained · Geopolitical premium active</span>
-  </div>
-  <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:7px 14px;font-size:11px;">
-    <span style="color:#9ca3af;">XLE vs SPY:</span> <span style="color:#16a34a;font-weight:600;">Outperforming YTD +6.1%</span>
-  </div>
-</div>
 """, unsafe_allow_html=True)
+
+# Live cross-market relationships
+with st.spinner("Loading cross-market data..."):
+    cross = get_cross_market()
+    breadth = get_breadth_indicators()
+
+if cross:
+    st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:10px 0 6px;">Live Cross-Market Relationships (1-month change)</div>', unsafe_allow_html=True)
+    cm_cols = st.columns(len(cross))
+    for col, (key, d) in zip(cm_cols, cross.items()):
+        chg = d["chg"]
+        c = clr(chg)
+        bg = "#f0fdf4" if chg > 1 else "#fef2f2" if chg < -1 else "#f9fafb"
+        bc = "#bbf7d0" if chg > 1 else "#fecaca" if chg < -1 else "#e5e7eb"
+        with col:
+            st.markdown(f"""
+            <div class="tip-wrap" style="background:{bg};border:1px solid {bc};border-radius:6px;
+                 padding:8px 8px;text-align:center;cursor:pointer;">
+              <div style="font-size:10px;font-weight:700;color:#374151;">{d["label"].split(" vs ")[0] if " vs " in d["label"] else d["label"]}</div>
+              <div style="font-size:9px;color:#9ca3af;margin-bottom:3px;">{d["label"]}</div>
+              <div style="font-size:13px;font-weight:700;color:{c};">{arr(chg)} {chg:+.1f}%</div>
+              <div style="font-size:9px;color:#9ca3af;">{d["val"]}</div>
+              <div class="tip-box" style="width:200px;">{d["desc"]}</div>
+            </div>""", unsafe_allow_html=True)
+
+if breadth:
+    st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:10px 0 6px;">Breadth & Credit Indicators</div>', unsafe_allow_html=True)
+    br_cols = st.columns(4)
+    items = list(breadth.items())
+    for col, (k, d) in zip(br_cols, items):
+        if k == "breadth":
+            v = d["rsp_vs_spy"]
+            c = clr(v)
+            with col:
+                st.markdown(f"""<div class="card tip-wrap" style="cursor:pointer;">
+                  <div class="lbl">{d["label"]}</div>
+                  <div style="font-size:16px;font-weight:700;color:{c};">{v:+.2f}%</div>
+                  <div style="font-size:11px;color:{c};">{"Broad rally" if v > 0 else "Narrow rally"}</div>
+                  <div class="tip-box" style="width:210px;">{d["note"]}</div>
+                </div>""", unsafe_allow_html=True)
+        elif k == "credit":
+            c = clr(d["chg"])
+            with col:
+                st.markdown(f"""<div class="card tip-wrap" style="cursor:pointer;">
+                  <div class="lbl">{d["label"]}</div>
+                  <div style="font-size:16px;font-weight:700;color:{c};">${d["price"]:.2f}</div>
+                  <div style="font-size:11px;color:{c};">{arr(d["chg"])} {d["chg"]:+.2f}% 1M</div>
+                  <div class="tip-box" style="width:210px;">{d["note"]}</div>
+                </div>""", unsafe_allow_html=True)
+        elif k == "tlt":
+            c = clr(d["chg"])
+            with col:
+                st.markdown(f"""<div class="card tip-wrap" style="cursor:pointer;">
+                  <div class="lbl">{d["label"]}</div>
+                  <div style="font-size:16px;font-weight:700;color:{c};">${d["price"]:.2f}</div>
+                  <div style="font-size:11px;color:{c};">{arr(d["chg"])} {d["chg"]:+.2f}% today</div>
+                  <div class="tip-box" style="width:210px;">{d["note"]}</div>
+                </div>""", unsafe_allow_html=True)
+        elif k == "move":
+            mv = d["price"]
+            mc = "#dc2626" if mv > 130 else "#d97706" if mv > 100 else "#16a34a"
+            with col:
+                st.markdown(f"""<div class="card tip-wrap" style="cursor:pointer;">
+                  <div class="lbl">{d["label"]}</div>
+                  <div style="font-size:16px;font-weight:700;color:{mc};">{mv:.1f}</div>
+                  <div style="font-size:11px;color:{mc};">{"Danger" if mv>130 else "Caution" if mv>100 else "Calm"}</div>
+                  <div class="tip-box" style="width:210px;">{d["note"]}</div>
+                </div>""", unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 4 — INFLATION
@@ -565,16 +737,32 @@ inf_tips = {
 
 inf_col1, inf_col2, inf_col3 = st.columns(3)
 with inf_col1:
-    inf_data = [
-        ("CPI (YoY)",     "3.2%",       "#d97706", "Above 2% target"),
-        ("Core CPI",      "3.8%",       "#dc2626", "Sticky — ex food & energy"),
-        ("PCE (YoY)",     "2.8%",       "#d97706", "Fed preferred measure"),
-        ("PPI (YoY)",     "2.4%",       "#16a34a", "Easing at producer level"),
-        ("5Y Breakeven",  "2.51%",      "#d97706", "Market-implied inflation"),
-        ("Fed Funds Rate","3.50–3.75%", "#d97706", "Held steady Jan 2026"),
+    with st.spinner("Loading inflation data (FRED)..."):
+        fred = get_fred_inflation()
+
+    # FRED live data with static fallbacks
+    inf_display = [
+        ("CPI (YoY)",     fred.get("CPI (YoY)",     {}).get("val", 3.2),  "Above 2% = Fed cautious"),
+        ("Core CPI",      fred.get("Core CPI",      {}).get("val", 3.8),  "Sticky — ex food & energy"),
+        ("PCE (YoY)",     fred.get("PCE (YoY)",     {}).get("val", 2.8),  "Fed preferred measure"),
+        ("PPI (YoY)",     fred.get("PPI (YoY)",     {}).get("val", 2.4),  "Leading indicator for CPI"),
+        ("5Y Breakeven",  fred.get("5Y Breakeven",  {}).get("val", 2.51), "Bond market inflation forecast"),
+        ("Fed Funds Rate",fred.get("Fed Funds Rate",{}).get("val", 3.625),"Current rate — drives all borrowing"),
     ]
-    for label, val, c, note in inf_data:
+    fred_source = "Live: FRED" if fred else "Static fallback — add FRED_KEY to secrets for live data"
+
+    for label, val, note in inf_display:
         tip = inf_tips.get(label, "")
+        target = 2.0
+        c = "#16a34a" if val <= target + 0.3 else "#d97706" if val <= target + 1.5 else "#dc2626"
+        if label == "Fed Funds Rate":
+            c = "#d97706"
+            val_str = f"{val:.2f}%"
+        elif label == "5Y Breakeven":
+            c = "#d97706" if val > 2.3 else "#16a34a"
+            val_str = f"{val:.2f}%"
+        else:
+            val_str = f"{val:.1f}%"
         st.markdown(f"""
         <div style="display:flex;justify-content:space-between;align-items:center;
              padding:8px 0;border-bottom:1px solid #f3f4f6;font-size:12px;">
@@ -588,8 +776,9 @@ with inf_col1:
               <div class="tip-box">{tip}</div>
             </div>
           </div>
-          <div style="font-weight:700;font-size:15px;color:{c};">{val}</div>
+          <div style="font-weight:700;font-size:15px;color:{c};">{val_str}</div>
         </div>""", unsafe_allow_html=True)
+    st.caption(fred_source)
 
 with inf_col2:
     st.markdown('<div class="lbl" style="margin-bottom:10px;">Pressure by Category</div>', unsafe_allow_html=True)
@@ -685,49 +874,358 @@ else:
     st.info("Sector data loading — refresh in a moment")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SECTION 6 — THEMES & MOMENTUM
+# SECTION 6 — THEMES & MOMENTUM (Live price-momentum, free)
 # ══════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🎯 Market Themes & Momentum</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">🎯 Market Themes & Momentum — Live Price Momentum</div>', unsafe_allow_html=True)
 
-themes = {
-    "🔥 Hot": [
-        ("AI Infrastructure",    "Semis · Data Centers · Power Grid", 98, ["NVDA","AMD","SMCI","CEG","VST"]),
-        ("Defense & Aerospace",  "NATO spend · Rearmament cycle",     91, ["LMT","RTX","NOC","BA"]),
-        ("Energy Transition",    "Nuclear · Grid storage · LNG",      84, ["NEE","CEG","ETN","FSLR"]),
-        ("Reshoring/Industrials","Capex supercycle · Supply chain",    79, ["GE","ETN","CAT","HON"]),
-        ("Biotech / GLP-1",      "Obesity · Metabolic drugs",         72, ["NVO","LLY","VRTX","REGN"]),
+# Theme definitions: each has sub-sectors and ticker baskets
+# Score = weighted average of 1W (30%), 1M (50%), 3M (20%) momentum of basket
+THEME_UNIVERSE = {
+    "hot": [
+        {
+            "name": "AI Infrastructure",
+            "subsectors": ["Semiconductors", "Data Centres", "AI Power Grid", "Networking"],
+            "tickers": ["NVDA","AMD","SMCI","AVGO","ARM","CEG","VST","DELL","ANET","MRVL"],
+            "desc": "The AI buildout driving demand for chips, servers, power and cooling. Largest capex cycle in history.",
+        },
+        {
+            "name": "Defense & Aerospace",
+            "subsectors": ["Weapons Systems", "Cyber Defense", "Space", "NATO Rearmament"],
+            "tickers": ["LMT","RTX","NOC","BA","GD","PLTR","KTOS","HII","L3H","LDOS"],
+            "desc": "Global rearmament cycle. NATO countries raising defense spend. Cyber threats driving software defense.",
+        },
+        {
+            "name": "Energy & Power Grid",
+            "subsectors": ["Nuclear", "LNG Exports", "Grid Infrastructure", "Natural Gas"],
+            "tickers": ["CEG","VST","CCJ","ETN","EATON","LNG","OKE","NEE","FSLR","GEV"],
+            "desc": "AI power demand + energy security driving nuclear revival, grid upgrades and LNG exports.",
+        },
+        {
+            "name": "Reshoring & Industrials",
+            "subsectors": ["Factory Automation", "Construction", "Machinery", "Supply Chain"],
+            "tickers": ["GE","ETN","CAT","DE","HON","EMR","ROK","PWR","FLR","MTZ"],
+            "desc": "US manufacturing returning home. Massive capex into factories, automation and infrastructure.",
+        },
+        {
+            "name": "Biotech & GLP-1",
+            "subsectors": ["Obesity Drugs", "Oncology", "Gene Therapy", "Medical Devices"],
+            "tickers": ["NVO","LLY","VRTX","REGN","AMGN","ISRG","DXCM","MRNA","EDIT","CRSP"],
+            "desc": "GLP-1 obesity drugs reshaping pharma. Gene editing and oncology creating new treatment categories.",
+        },
     ],
-    "📉 Fading": [
-        ("ESG / Clean Energy",  "Policy reversal headwinds",       38, ["ICLN","ENPH","SEDG","RUN"]),
-        ("China Reopening",     "Geopolitical risk · Earnings miss",27, ["BABA","JD","NIO","BIDU"]),
-        ("Office REITs",        "Structural vacancy · Rate pressure",22, ["SLG","BXP","VNO"]),
+    "fading": [
+        {
+            "name": "ESG & Clean Energy",
+            "subsectors": ["Solar", "Wind", "EV Charging", "Carbon Credits"],
+            "tickers": ["ENPH","SEDG","RUN","PLUG","FCEL","BLNK","CHPT","NOVA","ARRY","BE"],
+            "desc": "Policy headwinds, high rates hurting project financing. Solar oversupply from China.",
+        },
+        {
+            "name": "China Consumer",
+            "subsectors": ["E-commerce", "EV", "Internet", "Consumer Tech"],
+            "tickers": ["BABA","JD","PDD","NIO","BIDU","LI","XPEV","BILI","TME","IQ"],
+            "desc": "Geopolitical risk, weak consumer confidence, regulatory pressure and earnings misses.",
+        },
+        {
+            "name": "Office REITs",
+            "subsectors": ["Office Space", "Commercial Property", "Urban Core"],
+            "tickers": ["SLG","BXP","VNO","CXP","HIW","PDM","DEA","PGRE","OPI","ESRT"],
+            "desc": "Structural shift to hybrid work. High vacancy rates. Rate sensitivity hurting valuations.",
+        },
+        {
+            "name": "Speculative Tech",
+            "subsectors": ["Unprofitable Growth", "SPACs", "Meme Stocks"],
+            "tickers": ["SOFI","OPEN","WISH","CLOV","UWMC","RIDE","NKLA","SPCE","BBBY","PTON"],
+            "desc": "Rate-sensitive, cash-burning companies. Higher for longer rates = capital dries up.",
+        },
     ],
-    "🌱 Emerging": [
-        ("Quantum Computing", "Early-stage hardware race",      61, ["IONQ","RGTI","IBM","GOOGL"]),
-        ("Humanoid Robotics", "Labor displacement play",        57, ["TSLA","ABB","HON","NVDA"]),
-        ("Rare Earths",       "Supply chain strategic assets",  53, ["MP","UUUU","FCX","NEM"]),
+    "emerging": [
+        {
+            "name": "Quantum Computing",
+            "subsectors": ["Quantum Hardware", "Quantum Software", "Error Correction"],
+            "tickers": ["IONQ","RGTI","QUBT","IBM","GOOGL","MSFT","QBTS","ARQQ","HON","NVDA"],
+            "desc": "Early-stage race for quantum supremacy. Hardware breakthroughs accelerating. Long-term transformative.",
+        },
+        {
+            "name": "Humanoid Robotics",
+            "subsectors": ["Robot Hardware", "AI Control Systems", "Factory Automation"],
+            "tickers": ["TSLA","NVDA","FANUC","ABB","HON","BRZE","PATH","KDLY","MTTR","AI"],
+            "desc": "Labor shortage + AI convergence. Tesla Optimus, Figure AI driving investor excitement.",
+        },
+        {
+            "name": "Rare Earths & Critical Minerals",
+            "subsectors": ["Lithium", "Cobalt", "Rare Earth Mining", "Copper"],
+            "tickers": ["MP","UUUU","ALB","LAC","FCX","NEM","VALE","RIO","BHP","TECK"],
+            "desc": "EV batteries, defense and chips all need critical minerals. Supply chains being secured nationally.",
+        },
+        {
+            "name": "Longevity & Health Tech",
+            "subsectors": ["Anti-aging", "Diagnostics", "Digital Health", "Wearables"],
+            "tickers": ["ISRG","DXCM","TDOC","ACMR","VEEV","HIMS","DOCS","NARI","OMCL","PHR"],
+            "desc": "Ageing demographics driving preventative health. AI diagnostics cutting costs and improving outcomes.",
+        },
     ],
 }
 
-tabs = st.tabs(list(themes.keys()))
-for tab, (_, theme_list) in zip(tabs, themes.items()):
+@st.cache_data(ttl=3600)  # Refresh every hour — free, Yahoo Finance
+def compute_theme_momentum(theme_universe):
+    """
+    Calculate theme momentum scores from real stock price performance.
+    Score = weighted avg of basket: 1W(30%) + 1M(50%) + 3M(20%)
+    Also ranks individual tickers by momentum within each theme.
+    """
+    results = {}
+    for category, themes in theme_universe.items():
+        results[category] = []
+        for theme in themes:
+            ticker_data = []
+            for sym in theme["tickers"][:6]:  # top 6 per theme
+                try:
+                    h = yf.Ticker(sym).history(period="3mo")
+                    if not h.empty and len(h) >= 5:
+                        p = h["Close"].iloc[-1]
+                        chg1w = ((p - h["Close"].iloc[-6])  / h["Close"].iloc[-6]  * 100) if len(h) >= 6  else 0
+                        chg1m = ((p - h["Close"].iloc[-22]) / h["Close"].iloc[-22] * 100) if len(h) >= 22 else 0
+                        chg3m = ((p - h["Close"].iloc[0])   / h["Close"].iloc[0]   * 100)
+                        weighted = chg1w * 0.30 + chg1m * 0.50 + chg3m * 0.20
+                        ticker_data.append({
+                            "sym": sym, "price": p,
+                            "chg1w": chg1w, "chg1m": chg1m, "chg3m": chg3m,
+                            "weighted": weighted
+                        })
+                except:
+                    pass
+
+            if ticker_data:
+                avg = sum(t["weighted"] for t in ticker_data) / len(ticker_data)
+                # Normalise to 0-100 score: 0% momentum = 50, +20% = 90, -20% = 10
+                score = max(0, min(100, int(50 + avg * 2)))
+                # Sort tickers by momentum descending
+                ticker_data.sort(key=lambda x: -x["weighted"])
+                results[category].append({
+                    **theme,
+                    "score": score,
+                    "ticker_data": ticker_data,
+                    "avg_mom": avg,
+                })
+            else:
+                results[category].append({**theme, "score": 50, "ticker_data": [], "avg_mom": 0})
+
+        # Sort by score descending within each category
+        results[category].sort(key=lambda x: -x["score"])
+    return results
+
+# ── LAYER 3: Manual ticker additions via sidebar ─────────────────────────────
+if "custom_tickers" not in st.session_state:
+    st.session_state.custom_tickers = {}  # {theme_name: [tickers]}
+if "approved_recs" not in st.session_state:
+    st.session_state.approved_recs = {}   # stores approved Claude recommendations
+
+# ── LAYER 1: Compute live momentum ───────────────────────────────────────────
+# Merge custom tickers into universe before scoring
+universe_with_custom = {}
+import copy
+for cat, themes in THEME_UNIVERSE.items():
+    universe_with_custom[cat] = []
+    for t in themes:
+        t2 = copy.deepcopy(t)
+        extras = st.session_state.custom_tickers.get(t2["name"], [])
+        t2["tickers"] = list(dict.fromkeys(t2["tickers"] + extras))  # dedupe
+        universe_with_custom[cat].append(t2)
+
+# Add any Claude-approved new themes
+for cat in ["hot", "fading", "emerging"]:
+    for new_theme in st.session_state.approved_recs.get(f"new_{cat}", []):
+        universe_with_custom[cat].append(new_theme)
+
+with st.spinner("Computing live theme momentum from real prices..."):
+    live_themes = compute_theme_momentum(universe_with_custom)
+
+today_str = datetime.now().strftime("%Y-%m-%d")
+
+# ── LAYER 2: Daily Claude theme intelligence ──────────────────────────────────
+@st.cache_data(ttl=86400)
+def get_daily_theme_intel(scores_summary: str, sector_perf: str,
+                           spy_1m: float, vix: float, date_str: str):
+    ant_key = _anthropic_key()
+    if not ant_key:
+        return None
+    try:
+        import json as _json
+        prompt = f"""You are a senior market strategist. Review today's theme momentum and market data.
+
+DATE: {date_str}
+SPY 1M: {spy_1m:+.1f}%  VIX: {vix:.1f}
+SECTORS: {sector_perf}
+THEME SCORES: {scores_summary}
+
+Return ONLY valid JSON (no markdown):
+{{
+  "upgrades": [{{"name": "ThemeName", "reason": "one sentence why momentum improving"}}],
+  "downgrades": [{{"name": "ThemeName", "reason": "one sentence why momentum fading"}}],
+  "new_theme": {{
+    "name": "New Theme Name",
+    "category": "hot|fading|emerging",
+    "subsectors": ["Sub1","Sub2","Sub3"],
+    "tickers": ["T1","T2","T3","T4","T5"],
+    "desc": "One sentence description.",
+    "reason": "Why this theme is emerging right now"
+  }},
+  "daily_note": "2-3 sentence plain English summary of what is driving theme rotation today"
+}}
+
+Rules:
+- upgrades/downgrades: only list themes where something genuinely changed today
+- new_theme: only suggest if truly new and not already covered — set to null if nothing new
+- tickers must be real US-listed stocks
+- daily_note must reference actual market conditions"""
+
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": ant_key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 600,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=20
+        )
+        text = r.json().get("content", [{}])[0].get("text", "").strip()
+        return _json.loads(text)
+    except:
+        return None
+
+ant_key = _anthropic_key()
+spy_d = idx.get("SPY", {})
+sector_perf_str = ", ".join([f"{k}:{v.get('1d',0):+.1f}%" for k,v in list((sectors or {}).items())[:6]])
+scores_str = " | ".join([f"{t['name']}:{t['score']}" for cat in ["hot","fading","emerging"] for t in live_themes.get(cat,[])])
+
+if ant_key:
+    with st.spinner("Claude reviewing today's theme intelligence..."):
+        intel = get_daily_theme_intel(
+            scores_str, sector_perf_str,
+            spy_d.get("chg1m", 0), vix_price if "vix_price" in dir() else 18,
+            today_str
+        )
+else:
+    intel = None
+
+# Show Claude daily note if available
+if intel and intel.get("daily_note"):
+    st.markdown(f"""
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;
+         padding:12px 16px;margin-bottom:12px;">
+      <div style="font-size:11px;font-weight:700;color:#1d4ed8;margin-bottom:5px;">
+        🤖 Daily Theme Intelligence · Claude Haiku · {today_str}
+      </div>
+      <div style="font-size:12px;color:#1e3a5f;line-height:1.6;">{intel["daily_note"]}</div>
+    </div>""", unsafe_allow_html=True)
+
+# Show pending recommendations for approval
+upgrades   = intel.get("upgrades",   []) if intel else []
+downgrades = intel.get("downgrades", []) if intel else []
+new_theme  = intel.get("new_theme")      if intel else None
+
+pending = []
+if upgrades:
+    for u in upgrades:
+        pending.append(("⬆️ Upgrade", u["name"], u["reason"], "up"))
+if downgrades:
+    for d in downgrades:
+        pending.append(("⬇️ Downgrade", d["name"], d["reason"], "dn"))
+if new_theme and isinstance(new_theme, dict):
+    pending.append(("✨ New Theme", new_theme["name"],
+                    new_theme.get("reason",""), "new"))
+
+if pending:
+    st.markdown('<div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:6px;">📋 Daily recommendations - click to approve</div>', unsafe_allow_html=True)
+    rec_cols = st.columns(len(pending))
+    for col, (label, name, reason, kind) in zip(rec_cols, pending):
+        bg = "#f0fdf4" if kind=="up" else "#fef2f2" if kind=="dn" else "#faf5ff"
+        bc = "#bbf7d0" if kind=="up" else "#fecaca" if kind=="dn" else "#e9d5ff"
+        tc = "#15803d" if kind=="up" else "#b91c1c" if kind=="dn" else "#7e22ce"
+        with col:
+            st.markdown(f"""
+            <div style="background:{bg};border:1px solid {bc};border-radius:6px;
+                 padding:8px 10px;margin-bottom:6px;">
+              <div style="font-size:10px;font-weight:700;color:{tc};">{label}</div>
+              <div style="font-size:12px;font-weight:700;color:#374151;margin:3px 0;">{name}</div>
+              <div style="font-size:10px;color:#6b7280;">{reason}</div>
+            </div>""", unsafe_allow_html=True)
+            if st.button(f"✓ Approve", key=f"approve_{name}_{kind}"):
+                if kind == "new" and isinstance(new_theme, dict):
+                    cat = new_theme.get("category","emerging")
+                    existing = st.session_state.approved_recs.get(f"new_{cat}", [])
+                    existing.append({
+                        "name": new_theme["name"],
+                        "subsectors": new_theme.get("subsectors", []),
+                        "tickers": new_theme.get("tickers", []),
+                        "desc": new_theme.get("desc", ""),
+                    })
+                    st.session_state.approved_recs[f"new_{cat}"] = existing
+                st.rerun()
+
+# ── Display theme tabs ────────────────────────────────────────────────────────
+tab_labels = ["🔥 Hot", "📉 Fading", "🌱 Emerging"]
+tab_keys   = ["hot", "fading", "emerging"]
+tabs_th = st.tabs(tab_labels)
+
+for tab, key in zip(tabs_th, tab_keys):
     with tab:
-        for name, meta, score, tickers in theme_list:
-            sc = "#16a34a" if score >= 70 else "#d97706" if score >= 45 else "#dc2626"
-            c1t, c2t, c3t = st.columns([3, 1, 2])
-            with c1t:
-                st.markdown(f"**{name}**  \n<small style='color:#9ca3af'>{meta}</small>", unsafe_allow_html=True)
-            with c2t:
-                st.markdown(f"<div style='font-size:20px;font-weight:700;color:{sc};text-align:right;'>{score}</div>"
-                            f"<div style='font-size:10px;color:#9ca3af;text-align:right;'>momentum</div>",
-                            unsafe_allow_html=True)
-            with c3t:
-                pills = " ".join([
-                    f'<span style="background:#f3f4f6;border:1px solid #e5e7eb;color:#2563eb;'
-                    f'padding:2px 7px;border-radius:4px;font-size:10px;font-weight:600;">{t}</span>'
-                    for t in tickers])
-                st.markdown(pills, unsafe_allow_html=True)
-            st.markdown("<hr style='border-color:#f3f4f6;margin:6px 0;'>", unsafe_allow_html=True)
+        for t in live_themes.get(key, []):
+            score = t["score"]
+            avg_m = t.get("avg_mom", 0)
+            sc    = "#16a34a" if score >= 65 else "#d97706" if score >= 45 else "#dc2626"
+
+            # Flag if Claude recommended upgrade/downgrade
+            flag = ""
+            if intel:
+                if any(u["name"] == t["name"] for u in upgrades):   flag = " ⬆️"
+                if any(d["name"] == t["name"] for d in downgrades):  flag = " ⬇️"
+
+            with st.expander(f"**{t['name']}**{flag}  —  Score: {score}/100  ·  {avg_m:+.1f}%"):
+                col_l, col_r = st.columns([2, 1])
+                with col_l:
+                    st.markdown(f'<div style="font-size:12px;color:#6b7280;margin-bottom:8px;">{t["desc"]}</div>', unsafe_allow_html=True)
+                    st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;">Sub-sectors</div>', unsafe_allow_html=True)
+                    pills = " ".join([f'<span style="background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600;">{s}</span>' for s in t.get("subsectors",[])])
+                    st.markdown(pills, unsafe_allow_html=True)
+                    st.markdown(f'''<div style="margin-top:10px;">
+                      <div style="display:flex;justify-content:space-between;font-size:10px;color:#9ca3af;margin-bottom:3px;">
+                        <span>Momentum</span><span style="font-weight:700;color:{sc};">{score}/100</span>
+                      </div>
+                      <div style="height:7px;background:#f3f4f6;border-radius:4px;overflow:hidden;">
+                        <div style="height:7px;width:{score}%;background:{sc};border-radius:4px;"></div>
+                      </div></div>''', unsafe_allow_html=True)
+
+                    # Layer 3 — add custom ticker to this theme
+                    new_tick = st.text_input(f"Add ticker to {t['name']}", key=f"add_{t['name']}",
+                                             placeholder="e.g. SOUN", max_chars=8,
+                                             label_visibility="collapsed").upper().strip()
+                    if st.button(f"+ Add", key=f"addbtn_{t['name']}") and new_tick:
+                        existing = st.session_state.custom_tickers.get(t["name"], [])
+                        if new_tick not in existing:
+                            existing.append(new_tick)
+                            st.session_state.custom_tickers[t["name"]] = existing
+                            st.rerun()
+                    # Show custom tickers added
+                    customs = st.session_state.custom_tickers.get(t["name"], [])
+                    if customs:
+                        st.caption(f"Your additions: {', '.join(customs)}")
+
+                with col_r:
+                    st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;">Top stocks by momentum</div>', unsafe_allow_html=True)
+                    for td in t.get("ticker_data", [])[:5]:
+                        tc = clr(td["chg1m"])
+                        is_custom = td["sym"] in st.session_state.custom_tickers.get(t["name"], [])
+                        custom_badge = ' <span style="background:#faf5ff;color:#7e22ce;font-size:9px;padding:1px 4px;border-radius:2px;">custom</span>' if is_custom else ""
+                        st.markdown(f"""
+                        <div style="display:flex;justify-content:space-between;align-items:center;
+                             padding:4px 0;border-bottom:1px solid #f3f4f6;font-size:11px;">
+                          <span style="font-weight:700;color:#374151;">{td["sym"]}{custom_badge}</span>
+                          <span style="color:{tc};font-weight:600;">{td["chg1m"]:+.1f}%</span>
+                          <span style="color:{clr(td["chg1w"])};font-size:10px;">{td["chg1w"]:+.1f}%</span>
+                        </div>""", unsafe_allow_html=True)
+
+st.caption(f"Layer 1: Live price momentum (Yahoo Finance, hourly) · Layer 2: Daily theme intelligence (Claude Haiku, ~$0.008/day) · Layer 3: Your custom tickers · {today_str}")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SECTION 7 — SENTIMENT (LIVE)
@@ -956,12 +1454,25 @@ else:
 st.markdown('<div class="sec">📅 Catalyst Calendar</div>', unsafe_allow_html=True)
 
 # Static macro events (always shown)
-macro_events = [
-    ("FOMC", "Mar 18", "Rate Decision", "HIGH", "warn"),
-    ("GDP",  "Mar 27", "Q4 Final",      "MED",  "neu"),
-    ("NFP",  "Apr 4",  "Jobs Report",   "HIGH", "warn"),
-    ("CPI",  "Apr 10", "Inflation",     "HIGH", "warn"),
+# Auto-filter past dates
+from datetime import date
+today_d = date.today()
+
+all_macro = [
+    ("FOMC",  date(2026, 3, 18),  "Rate Decision",  "HIGH", "warn"),
+    ("GDP",   date(2026, 3, 27),  "Q4 Final GDP",   "MED",  "neu"),
+    ("NFP",   date(2026, 4, 4),   "Jobs Report",    "HIGH", "warn"),
+    ("CPI",   date(2026, 4, 10),  "Inflation Print","HIGH", "warn"),
+    ("FOMC",  date(2026, 5, 7),   "Rate Decision",  "HIGH", "warn"),
+    ("NFP",   date(2026, 5, 1),   "Jobs Report",    "HIGH", "warn"),
+    ("CPI",   date(2026, 5, 14),  "Inflation Print","HIGH", "warn"),
+    ("FOMC",  date(2026, 6, 18),  "Rate Decision",  "HIGH", "warn"),
 ]
+macro_events = [
+    (t, d.strftime("%b %d"), typ, imp, c)
+    for t, d, typ, imp, c in all_macro
+    if d >= today_d
+][:4]  # Show next 4 upcoming only
 
 # Live earnings from Finnhub if key available, else static fallback
 fh_key = _finnhub_key()

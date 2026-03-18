@@ -127,35 +127,53 @@ def get_indexes():
 
 @st.cache_data(ttl=300)
 def get_macro():
-    syms={"^VIX":"VIX","^TNX":"10Y Yield","^FVX":"5Y Yield","^IRX":"3M T-Bill","DX-Y.NYB":"DXY","^VVIX":"VVIX","^MOVE":"MOVE"}
+    syms={"^VIX":"VIX","^TNX":"10Y Yield","^FVX":"5Y Yield","^IRX":"3M T-Bill","DX-Y.NYB":"DXY","^VVIX":"VVIX"}
     out={}
     for sym,name in syms.items():
         try:
             h=yf.Ticker(sym).history(period="5d")
             if not h.empty and len(h)>=2:
                 p,prev=h["Close"].iloc[-1],h["Close"].iloc[-2]
-                out[name]={"price":p,"chg":p-prev if "Yield" in name or name in("3M T-Bill","MOVE") else (p-prev)/prev*100}
+                out[name]={"price":p,"chg":p-prev if "Yield" in name or name=="3M T-Bill" else (p-prev)/prev*100}
         except: pass
+    # MOVE proxy — compute TLT 20-day annualised volatility (bond vol proxy)
+    try:
+        tlt_h=yf.Ticker("TLT").history(period="3mo")
+        if not tlt_h.empty and len(tlt_h)>=22:
+            daily_ret=tlt_h["Close"].pct_change().dropna()
+            roll_vol=float(daily_ret.tail(20).std()*(252**0.5)*100)
+            prev_vol=float(daily_ret.tail(40).head(20).std()*(252**0.5)*100)
+            out["MOVE"]={"price":round(roll_vol,1),"chg":round(roll_vol-prev_vol,1),
+                         "source":"TLT vol proxy"}
+    except: pass
     return out
 
 @st.cache_data(ttl=300)
 def get_breadth():
     try:
-        rsp=yf.Ticker("RSP").history(period="1mo")
-        spy=yf.Ticker("SPY").history(period="1mo")
-        hyg=yf.Ticker("HYG").history(period="1mo")
-        tlt=yf.Ticker("TLT").history(period="5d")
         out={}
-        if not rsp.empty and not spy.empty and len(rsp)>=22:
+        # RSP vs SPY breadth
+        rsp=yf.Ticker("RSP").history(period="3mo")
+        spy=yf.Ticker("SPY").history(period="3mo")
+        if not rsp.empty and not spy.empty and len(rsp)>=22 and len(spy)>=22:
             rsp_m=(rsp["Close"].iloc[-1]-rsp["Close"].iloc[-22])/rsp["Close"].iloc[-22]*100
             spy_m=(spy["Close"].iloc[-1]-spy["Close"].iloc[-22])/spy["Close"].iloc[-22]*100
-            out["rsp_spy"]=rsp_m-spy_m
+            out["rsp_spy"]=round(rsp_m-spy_m, 2)
+        else:
+            out["rsp_spy"]=0.0
+        # HYG credit
+        hyg=yf.Ticker("HYG").history(period="3mo")
         if not hyg.empty and len(hyg)>=22:
-            out["hyg"]={"price":hyg["Close"].iloc[-1],"chg1m":(hyg["Close"].iloc[-1]-hyg["Close"].iloc[-22])/hyg["Close"].iloc[-22]*100}
+            chg1m=(hyg["Close"].iloc[-1]-hyg["Close"].iloc[-22])/hyg["Close"].iloc[-22]*100
+            out["hyg"]={"price":round(hyg["Close"].iloc[-1],2),"chg1m":round(chg1m,2)}
+        # TLT
+        tlt=yf.Ticker("TLT").history(period="5d")
         if not tlt.empty and len(tlt)>=2:
-            out["tlt"]={"price":tlt["Close"].iloc[-1],"chg":(tlt["Close"].iloc[-1]-tlt["Close"].iloc[-2])/tlt["Close"].iloc[-2]*100}
+            chg=(tlt["Close"].iloc[-1]-tlt["Close"].iloc[-2])/tlt["Close"].iloc[-2]*100
+            out["tlt"]={"price":round(tlt["Close"].iloc[-1],2),"chg":round(chg,2)}
         return out
-    except: return {}
+    except Exception as e:
+        return {"rsp_spy":0.0}
 
 @st.cache_data(ttl=300)
 def get_cross_market():
@@ -476,16 +494,17 @@ spy_d = idx.get("SPY",{}); qqq_d = idx.get("QQQ",{}); iwm_d = idx.get("IWM",{})
 # ════════════════════════════════════════════════════════════════════════════════
 # HEADER
 # ════════════════════════════════════════════════════════════════════════════════
-col_h1, col_h2 = st.columns([4,1])
-with col_h1:
-    st.title("📊 Trader Intelligence Dashboard")
-    st.caption(f"Live market data · {datetime.now().strftime('%A %d %B %Y · %H:%M')} · Yahoo Finance + Finnhub + FRED")
-with col_h2:
-    fh_key = _finnhub_key()
-    ant_key = _anthropic_key()
-    badge = '<span class="badge b-buy">● REAL-TIME · FINNHUB</span>' if fh_key else '<span class="badge b-hold">◐ 15-MIN DELAY · YFINANCE</span>'
-    ai_badge = ' &nbsp; <span class="badge b-neu">🤖 AI ACTIVE</span>' if ant_key else ""
-    st.markdown(f'<div style="text-align:right;padding-top:14px;">{badge}{ai_badge}</div>', unsafe_allow_html=True)
+st.title("📊 Trader Intelligence Dashboard")
+fh_key = _finnhub_key()
+ant_key = _anthropic_key()
+badge = '<span class="badge b-buy" style="font-size:12px;padding:5px 12px;">● REAL-TIME · FINNHUB</span>' if fh_key else '<span class="badge b-hold" style="font-size:12px;padding:5px 12px;">◐ 15-MIN DELAY · YFINANCE</span>'
+ai_badge = '&nbsp;<span class="badge b-neu" style="font-size:12px;padding:5px 12px;">🤖 AI ACTIVE</span>' if ant_key else '&nbsp;<span class="badge b-sell" style="font-size:12px;padding:5px 12px;">⚠️ NO AI KEY</span>'
+st.markdown(f"""
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
+  <span style="font-size:12px;color:#9ca3af;">Live market data · {datetime.now().strftime('%A %d %B %Y · %H:%M')} · Yahoo Finance + Finnhub + FRED</span>
+  <div style="display:flex;gap:6px;align-items:center;">{badge}{ai_badge}</div>
+</div>
+""", unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -517,7 +536,7 @@ regime_items = [
     ("VIX Level", f"{vix_price:.1f}", clr(vix_price,False), "#fff", "Under 18=calm. 18-25=caution. 25-35=fear. Over 35=panic."),
     ("SPY 1-Month", f"{spy_1m:+.1f}%", clr(spy_1m), "#fff", "S&P 500 1-month trend. Positive=uptrend intact."),
     ("Breadth (RSP-SPY)", f"{rsp_spy:+.1f}%", clr(rsp_spy), "#fff", "Positive=broad rally, equal-weight leading. Negative=only mega caps moving."),
-    ("HYG Credit 1M", f"{hyg_chg:+.1f}%" if breadth.get("hyg") else "N/A", clr(hyg_chg), "#fff", "High yield bonds. Falling=credit stress=recession warning. Best leading indicator."),
+    ("HYG Credit 1M", f"{breadth.get('hyg',{}).get('chg1m',0):+.1f}%", clr(breadth.get('hyg',{}).get('chg1m',0)), "#fff", "High yield bonds. Falling=credit stress=recession warning. Best leading indicator."),
     ("Yield Curve", f"{(macro.get('10Y Yield',{}).get('price',4.3)-macro.get('3M T-Bill',{}).get('price',3.6)):+.2f}%",
      "#16a34a" if macro.get("10Y Yield",{}).get("price",4.3)>macro.get("3M T-Bill",{}).get("price",3.6) else "#dc2626","#fff",
      "10Y minus 3M yield. Positive=normal. Inverted=recession warning."),
@@ -688,30 +707,85 @@ if cross:
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🩺 Market Breadth & Internals</div>', unsafe_allow_html=True)
 
-br_cols = st.columns(4)
-br_items = [
-    ("Breadth (RSP-SPY 1M)", f"{rsp_spy:+.2f}%", clr(rsp_spy),
-     "Positive=equal weight beating cap weight=broad rally. Negative=only mega caps moving=narrow market warning."),
-    ("HYG Credit 1M", f"{breadth.get('hyg',{}).get('chg1m',0):+.2f}%" if breadth.get("hyg") else "Loading",
-     clr(breadth.get("hyg",{}).get("chg1m",0)),
-     "High yield bond ETF. Falling=credit stress building. The single best leading recession indicator."),
-    ("TLT (20Y Treasury)", f"${breadth.get('tlt',{}).get('price',0):.2f} {breadth.get('tlt',{}).get('chg',0):+.2f}%" if breadth.get("tlt") else "Loading",
-     clr(breadth.get("tlt",{}).get("chg",0)),
-     "Long-dated Treasury ETF. Rising=flight to safety. Falling=inflation fears or strong economy."),
-    ("MOVE Index", f"{macro.get('MOVE',{}).get('price',0):.0f}" if macro.get("MOVE") else "N/A",
-     "#dc2626" if macro.get("MOVE",{}).get("price",0)>130 else "#d97706" if macro.get("MOVE",{}).get("price",0)>100 else "#16a34a",
-     "Bond market VIX. Above 130=serious rate uncertainty. Leads equity VIX. Rising=rates volatile=stocks volatile."),
+@st.cache_data(ttl=300)
+def get_breadth_extended():
+    out = {}
+    for sym, key in [("RSP","rsp"),("SPY","spy"),("HYG","hyg"),("LQD","lqd"),
+                     ("TLT","tlt"),("IWM","iwm"),("XLK","xlk"),("XLP","xlp"),
+                     ("GLD","gld"),("UUP","uup")]:
+        try:
+            h = yf.Ticker(sym).history(period="3mo")
+            if not h.empty and len(h) >= 22:
+                p=h["Close"].iloc[-1]; p1d=h["Close"].iloc[-2]
+                p1m=h["Close"].iloc[-22]; p3m=h["Close"].iloc[0]
+                out[key]={"price":round(p,2),"chg1d":round((p-p1d)/p1d*100,2),
+                          "chg1m":round((p-p1m)/p1m*100,2)}
+        except: pass
+    if "rsp" in out and "spy" in out:
+        out["breadth_1m"]=round(out["rsp"]["chg1m"]-out["spy"]["chg1m"],2)
+    if "hyg" in out and "lqd" in out:
+        out["credit_chg"]=round(out["hyg"]["chg1m"]-out["lqd"]["chg1m"],2)
+    if "iwm" in out and "spy" in out:
+        out["small_vs_large"]=round(out["iwm"]["chg1m"]-out["spy"]["chg1m"],2)
+    if "xlp" in out and "xlk" in out:
+        out["def_rotation"]=round(out["xlp"]["chg1m"]-out["xlk"]["chg1m"],2)
+    if "gld" in out and "uup" in out:
+        out["gold_vs_dollar"]=round(out["gld"]["chg1m"]-out["uup"]["chg1m"],2)
+    return out
+
+with st.spinner("Loading breadth data..."):
+    bxt = get_breadth_extended()
+
+bm = [
+    ("RSP vs SPY (Breadth)",
+     f"{bxt['breadth_1m']:+.2f}pp" if "breadth_1m" in bxt else "Loading...",
+     clr(bxt.get("breadth_1m",0)),
+     "RSP (equal weight) vs SPY (cap weight). Positive=ALL stocks rising=broad healthy rally. Negative=only mega caps moving=narrow market=warning sign."),
+    ("HYG vs LQD (Credit)",
+     f"{bxt['credit_chg']:+.2f}pp" if "credit_chg" in bxt else "Loading...",
+     clr(bxt.get("credit_chg",0)),
+     "Junk bonds vs investment grade. Falling=credit stress building=recession warning. Most important leading indicator for market health."),
+    ("Small vs Large Cap",
+     f"{bxt['small_vs_large']:+.2f}pp" if "small_vs_large" in bxt else "Loading...",
+     clr(bxt.get("small_vs_large",0)),
+     "IWM vs SPY 1-month. Positive=small caps leading=risk-on, economy healthy. Negative=only large caps working=narrow market."),
+    ("Defensive Rotation",
+     f"{bxt['def_rotation']:+.2f}pp" if "def_rotation" in bxt else "Loading...",
+     clr(bxt.get("def_rotation",0), good_pos=False),
+     "Staples (XLP) vs Tech (XLK). Negative=tech leading=risk-on. Positive=defensives leading=investors getting cautious=potential slowdown."),
+    ("TLT (20Y Treasury)",
+     f"${bxt.get('tlt',{}).get('price',0):.2f}  {bxt.get('tlt',{}).get('chg1d',0):+.2f}%" if "tlt" in bxt else "Loading...",
+     clr(bxt.get("tlt",{}).get("chg1d",0)),
+     "20-year Treasury ETF. Rising=flight to safety, stocks may fall. Falling=inflation fears or strong economy."),
+    ("Gold vs Dollar",
+     f"{bxt['gold_vs_dollar']:+.2f}pp" if "gold_vs_dollar" in bxt else "Loading...",
+     clr(bxt.get("gold_vs_dollar",0)),
+     "Gold (GLD) vs Dollar (UUP). Positive=gold outperforming=inflation/stress. Negative=dollar strong=risk-off, commodities pressured."),
 ]
-for col,(label,val,vc,desc) in zip(br_cols, br_items):
-    with col:
+
+br_cols = st.columns(3)
+for i,(label,val,vc,desc) in enumerate(bm):
+    with br_cols[i%3]:
         st.markdown(f"""
-        <div class="card">
+        <div class="card" style="margin-bottom:8px;">
           <div style="display:flex;align-items:center;justify-content:space-between;">
             <div class="lbl">{label}</div>
             {tip('ℹ',desc)}
           </div>
-          <div style="font-size:18px;font-weight:700;color:{vc};margin-top:4px;">{val}</div>
+          <div style="font-size:20px;font-weight:700;color:{vc};margin-top:4px;">{val}</div>
         </div>""", unsafe_allow_html=True)
+
+bsc=0
+if "breadth_1m" in bxt: bsc+=1 if bxt["breadth_1m"]>0 else -1
+if "credit_chg" in bxt: bsc+=1 if bxt["credit_chg"]>0 else -1
+if "small_vs_large" in bxt: bsc+=1 if bxt["small_vs_large"]>0 else -1
+if "def_rotation" in bxt: bsc+=1 if bxt["def_rotation"]<0 else -1
+bsc_col="#16a34a" if bsc>=2 else "#dc2626" if bsc<=-2 else "#d97706"
+bsc_lbl="Strong breadth — broad rally confirmed" if bsc>=2 else "Weak breadth — narrow or deteriorating" if bsc<=-2 else "Mixed — selective conditions"
+bsc_bg="#f0fdf4" if bsc>=2 else "#fef2f2" if bsc<=-2 else "#fffbeb"
+bsc_bc="#bbf7d0" if bsc>=2 else "#fecaca" if bsc<=-2 else "#fde68a"
+st.markdown(f'<div style="background:{bsc_bg};border:1px solid {bsc_bc};border-radius:6px;padding:8px 14px;margin-top:4px;font-size:12px;"><span style="font-weight:700;color:{bsc_col};">Overall Breadth: {bsc_lbl}</span> <span style="color:#9ca3af;font-size:11px;">({bsc}/4 positive)</span></div>', unsafe_allow_html=True)
+
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 5 — SECTOR HEATMAP
@@ -745,14 +819,14 @@ macro_tips={"VIX":"Fear index. Under 18=complacent. 18-25=caution. 25-35=fear. O
             "3M T-Bill":"Short-term rate — reflects current Fed rate. Inverted above 10Y=yield curve inverted=recession warning.",
             "DXY":"US Dollar Index. Rising=bad for commodities, EM, multinational earnings. Falling=good for gold, oil, international stocks.",
             "VVIX":"VIX of VIX — volatility of volatility. Above 100=extreme uncertainty. Spikes often precede VIX spikes.",
-            "MOVE":"Bond market volatility. Leads equity VIX. Rising=rate uncertainty=watch for equity volatility."}
+            "MOVE":"Bond volatility proxy (TLT 20D ann. vol). Under 10=calm rates. 10-15=caution. Over 15=high rate uncertainty. Leads equity VIX."}
 
 mc_cols = st.columns(7)
 mc_items=[("VIX","VIX",False),("10Y Yield","10Y Yield",False),("5Y Yield","5Y Yield",False),
           ("3M T-Bill","3M T-Bill",False),("DXY","DXY",True),("VVIX","VVIX",False),("MOVE","MOVE",False)]
 for col,(key,label,good_up) in zip(mc_cols,mc_items):
     d=macro.get(key,{}); p=d.get("price",0); chg=d.get("chg",0)
-    is_yield="Yield" in key or key in("3M T-Bill","MOVE")
+    is_yield="Yield" in key or key=="3M T-Bill"
     c=clr(chg,good_up)
     with col:
         st.markdown(f"""

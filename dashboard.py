@@ -755,7 +755,7 @@ with inf_col1:
         ("5Y Breakeven",  fred.get("5Y Breakeven",  {}).get("val", 2.51), "Bond market inflation forecast"),
         ("Fed Funds Rate",fred.get("Fed Funds Rate",{}).get("val", 3.625),"Current rate — drives all borrowing"),
     ]
-    fred_source = "Live: FRED" if fred else "Static fallback — add FRED_KEY to secrets for live data"
+    fred_source = "Live: FRED (Federal Reserve)" if fred else "FRED data temporarily unavailable — using recent estimates"
 
     for label, val, note in inf_display:
         tip = inf_tips.get(label, "")

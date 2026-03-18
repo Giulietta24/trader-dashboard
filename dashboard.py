@@ -193,10 +193,16 @@ def get_cross_market():
         try:
             h1=yf.Ticker(s1).history(period="2mo")
             h2=yf.Ticker(s2).history(period="2mo")
-            if not h1.empty and not h2.empty and len(h1)>=22 and len(h2)>=22:
-                r_now=h1["Close"].iloc[-1]/h2["Close"].iloc[-1]
-                r_1m =h1["Close"].iloc[-22]/h2["Close"].iloc[-22]
-                out[key]={"label":label,"desc":desc,"chg":(r_now-r_1m)/r_1m*100}
+            if not h1.empty and not h2.empty and len(h1)>=6 and len(h2)>=6:
+                p1=h1["Close"].iloc[-1]; p2=h2["Close"].iloc[-1]
+                r_now=p1/p2
+                r_1w =h1["Close"].iloc[-6]/h2["Close"].iloc[-6] if len(h1)>=6 else r_now
+                r_1m =h1["Close"].iloc[-22]/h2["Close"].iloc[-22] if len(h1)>=22 else r_now
+                r_3m =h1["Close"].iloc[0]/h2["Close"].iloc[0]
+                out[key]={"label":label,"desc":desc,
+                          "chg_1w":(r_now-r_1w)/r_1w*100,
+                          "chg_1m":(r_now-r_1m)/r_1m*100,
+                          "chg_3m":(r_now-r_3m)/r_3m*100}
         except: pass
     return out
 
@@ -655,9 +661,9 @@ with chart_col1:
 with chart_col2:
     st.markdown('<div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:5px;">Style & risk appetite (30 days)</div>', unsafe_allow_html=True)
     fig2 = go.Figure()
-    for sym in ["QQQ","SOXX","EFA","BTC-USD"]:
+    for sym in ["QQQ","^IXIC","SOXX","EFA","EEM","BTC-USD"]:
         d = idx.get(sym)
-        disp = "BTC" if sym=="BTC-USD" else sym
+        disp = "BTC" if sym=="BTC-USD" else "NASDAQ" if sym=="^IXIC" else sym
         if d and "hist" in d and not d["hist"].empty:
             h30 = d["hist"].tail(30); base = h30["Close"].iloc[0]
             perf = ((h30["Close"]-base)/base*100)
@@ -675,7 +681,8 @@ with chart_col2:
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 3 — CROSS-MARKET RELATIONSHIPS
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🔗 Cross-Market Relationships — Live (1-Month Change)</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">🔗 Cross-Market Relationships</div>', unsafe_allow_html=True)
+cm_period = st.radio("Cross-market period", ["1W","1M","3M"], horizontal=True, label_visibility="collapsed", key="cm_period")
 
 with st.spinner("Loading cross-market data..."):
     cross = get_cross_market()
@@ -683,7 +690,8 @@ with st.spinner("Loading cross-market data..."):
 if cross:
     cm_cols = st.columns(len(cross))
     for col,(key,d) in zip(cm_cols, cross.items()):
-        chg = d["chg"]; c = clr(chg)
+        period_key = {"1W":"chg_1w","1M":"chg_1m","3M":"chg_3m"}.get(cm_period,"chg_1m")
+        chg = d.get(period_key, d.get("chg_1m",0)); c = clr(chg)
         bg = "#f0fdf4" if chg>1 else "#fef2f2" if chg<-1 else "#f9fafb"
         bc = "#bbf7d0" if chg>1 else "#fecaca" if chg<-1 else "#e5e7eb"
         parts = key.split("/")
@@ -775,16 +783,39 @@ for i,(label,val,vc,desc) in enumerate(bm):
           <div style="font-size:20px;font-weight:700;color:{vc};margin-top:4px;">{val}</div>
         </div>""", unsafe_allow_html=True)
 
-bsc=0
-if "breadth_1m" in bxt: bsc+=1 if bxt["breadth_1m"]>0 else -1
-if "credit_chg" in bxt: bsc+=1 if bxt["credit_chg"]>0 else -1
-if "small_vs_large" in bxt: bsc+=1 if bxt["small_vs_large"]>0 else -1
-if "def_rotation" in bxt: bsc+=1 if bxt["def_rotation"]<0 else -1
-bsc_col="#16a34a" if bsc>=2 else "#dc2626" if bsc<=-2 else "#d97706"
-bsc_lbl="Strong breadth — broad rally confirmed" if bsc>=2 else "Weak breadth — narrow or deteriorating" if bsc<=-2 else "Mixed — selective conditions"
-bsc_bg="#f0fdf4" if bsc>=2 else "#fef2f2" if bsc<=-2 else "#fffbeb"
-bsc_bc="#bbf7d0" if bsc>=2 else "#fecaca" if bsc<=-2 else "#fde68a"
-st.markdown(f'<div style="background:{bsc_bg};border:1px solid {bsc_bc};border-radius:6px;padding:8px 14px;margin-top:4px;font-size:12px;"><span style="font-weight:700;color:{bsc_col};">Overall Breadth: {bsc_lbl}</span> <span style="color:#9ca3af;font-size:11px;">({bsc}/4 positive)</span></div>', unsafe_allow_html=True)
+# Count how many indicators are positive (not a sum of +1/-1)
+pos_count = 0
+total_count = 0
+if "breadth_1m" in bxt:
+    total_count+=1
+    if bxt["breadth_1m"]>0: pos_count+=1
+if "credit_chg" in bxt:
+    total_count+=1
+    if bxt["credit_chg"]>0: pos_count+=1
+if "small_vs_large" in bxt:
+    total_count+=1
+    if bxt["small_vs_large"]>0: pos_count+=1
+if "def_rotation" in bxt:
+    total_count+=1
+    if bxt["def_rotation"]<0: pos_count+=1  # negative defensive rotation = good (tech leading)
+
+bsc_col="#16a34a" if pos_count>=3 else "#dc2626" if pos_count<=1 else "#d97706"
+bsc_lbl="Strong breadth — broad rally confirmed" if pos_count>=3 else "Weak breadth — narrow or deteriorating" if pos_count<=1 else "Mixed — selective conditions"
+bsc_bg="#f0fdf4" if pos_count>=3 else "#fef2f2" if pos_count<=1 else "#fffbeb"
+bsc_bc="#bbf7d0" if pos_count>=3 else "#fecaca" if pos_count<=1 else "#fde68a"
+
+# Explain each indicator's reading
+explain = []
+if "breadth_1m" in bxt: explain.append(f"RSP-SPY: {'✓ Broad' if bxt['breadth_1m']>0 else '✗ Narrow'}")
+if "credit_chg" in bxt: explain.append(f"Credit: {'✓ Healthy' if bxt['credit_chg']>0 else '✗ Stress'}")
+if "small_vs_large" in bxt: explain.append(f"Small caps: {'✓ Leading' if bxt['small_vs_large']>0 else '✗ Lagging'}")
+if "def_rotation" in bxt: explain.append(f"Defensives: {'✓ Not leading' if bxt['def_rotation']<0 else '✗ Rotating in'}")
+
+st.markdown(f'''<div style="background:{bsc_bg};border:1px solid {bsc_bc};border-radius:6px;padding:10px 14px;margin-top:4px;">
+  <div style="font-size:12px;"><span style="font-weight:700;color:{bsc_col};">Overall Breadth: {bsc_lbl}</span>
+  <span style="color:#9ca3af;font-size:11px;margin-left:8px;">({pos_count}/{total_count} indicators positive)</span></div>
+  <div style="font-size:11px;color:#6b7280;margin-top:5px;">{" &nbsp;·&nbsp; ".join(explain)}</div>
+</div>''', unsafe_allow_html=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════════

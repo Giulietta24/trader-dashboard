@@ -717,105 +717,202 @@ st.markdown('<div class="sec">🩺 Market Breadth & Internals</div>', unsafe_all
 
 @st.cache_data(ttl=300)
 def get_breadth_extended():
+    """Fetch all breadth, rotation and risk-appetite indicators."""
+    tickers = [
+        ("RSP","rsp"), ("SPY","spy"), ("HYG","hyg"), ("LQD","lqd"),
+        ("TLT","tlt"), ("IWM","iwm"), ("XLK","xlk"), ("XLP","xlp"),
+        ("GLD","gld"), ("UUP","uup"), ("HG=F","copper"), ("GC=F","gold"),
+        ("IVW","ivw"), ("IVE","ive"),    # Growth vs Value
+        ("SPHB","sphb"), ("SPLV","splv"),# High Beta vs Low Vol
+        ("XLF","xlf"), ("XLU","xlu"),    # Banks vs Utilities
+        ("SOXX","soxx"),                  # Semis
+        ("MTUM","mtum"), ("USMV","usmv"),# Momentum vs Min Vol
+        ("XLY","xly"),                    # Consumer Discretionary
+    ]
     out = {}
-    for sym, key in [("RSP","rsp"),("SPY","spy"),("HYG","hyg"),("LQD","lqd"),
-                     ("TLT","tlt"),("IWM","iwm"),("XLK","xlk"),("XLP","xlp"),
-                     ("GLD","gld"),("UUP","uup")]:
+    for sym, key in tickers:
         try:
             h = yf.Ticker(sym).history(period="3mo")
-            if not h.empty and len(h) >= 22:
+            if not h.empty and len(h) >= 6:
                 p=h["Close"].iloc[-1]; p1d=h["Close"].iloc[-2]
-                p1m=h["Close"].iloc[-22]; p3m=h["Close"].iloc[0]
-                out[key]={"price":round(p,2),"chg1d":round((p-p1d)/p1d*100,2),
-                          "chg1m":round((p-p1m)/p1m*100,2)}
+                p1w=h["Close"].iloc[-6] if len(h)>=6 else p
+                p1m=h["Close"].iloc[-22] if len(h)>=22 else h["Close"].iloc[0]
+                p3m=h["Close"].iloc[0]
+                out[key]={"price":round(p,2),
+                          "chg1d":round((p-p1d)/p1d*100,2),
+                          "chg1w":round((p-p1w)/p1w*100,2),
+                          "chg1m":round((p-p1m)/p1m*100,2),
+                          "chg3m":round((p-p3m)/p3m*100,2)}
         except: pass
-    if "rsp" in out and "spy" in out:
-        out["breadth_1m"]=round(out["rsp"]["chg1m"]-out["spy"]["chg1m"],2)
-    if "hyg" in out and "lqd" in out:
-        out["credit_chg"]=round(out["hyg"]["chg1m"]-out["lqd"]["chg1m"],2)
-    if "iwm" in out and "spy" in out:
-        out["small_vs_large"]=round(out["iwm"]["chg1m"]-out["spy"]["chg1m"],2)
-    if "xlp" in out and "xlk" in out:
-        out["def_rotation"]=round(out["xlp"]["chg1m"]-out["xlk"]["chg1m"],2)
-    if "gld" in out and "uup" in out:
-        out["gold_vs_dollar"]=round(out["gld"]["chg1m"]-out["uup"]["chg1m"],2)
-    return out
 
-with st.spinner("Loading breadth data..."):
+    def ratio(a, b, period="chg1m"):
+        if a in out and b in out:
+            return round(out[a][period] - out[b][period], 2)
+        return None
+
+    # Breadth indicators
+    out["breadth_1m"]     = ratio("rsp","spy")
+    out["credit_chg"]     = ratio("hyg","lqd")
+    out["small_vs_large"] = ratio("iwm","spy")
+
+    # Rotation indicators
+    out["growth_vs_value"]  = ratio("ivw","ive")
+    out["highbeta_vs_lowvol"]= ratio("sphb","splv")
+    out["cyclical_vs_def"]  = ratio("xly","xlp")    # positive = risk-on
+    out["banks_vs_utils"]   = ratio("xlf","xlu")    # positive = rates high, economy strong
+    out["copper_vs_gold"]   = ratio("copper","gold") # positive = growth over fear
+    out["semis_vs_spy"]     = ratio("soxx","spy")   # positive = tech/AI leading
+    out["momentum_vs_minvol"]= ratio("mtum","usmv") # positive = trending market
+    out["def_rotation"]     = ratio("xlp","xlk")    # negative = good (tech leading)
+
+    # Bond data
+    out["gold_vs_dollar"]   = ratio("gld","uup")
+
+    return {k:v for k,v in out.items() if v is not None}
+
+with st.spinner("Loading breadth & rotation data..."):
     bxt = get_breadth_extended()
 
-bm = [
-    ("RSP vs SPY (Breadth)",
+# ── Sub-section 1: Breadth Indicators ─────────────────────────────────────────
+st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;letter-spacing:.06em;text-transform:uppercase;margin:8px 0 6px;">Breadth Indicators — is the rally broad or narrow?</div>', unsafe_allow_html=True)
+
+breadth_metrics = [
+    ("RSP vs SPY",
      f"{bxt['breadth_1m']:+.2f}pp" if "breadth_1m" in bxt else "Loading...",
      clr(bxt.get("breadth_1m",0)),
-     "RSP (equal weight) vs SPY (cap weight). Positive=ALL stocks rising=broad healthy rally. Negative=only mega caps moving=narrow market=warning sign."),
-    ("HYG vs LQD (Credit)",
+     "Equal weight vs cap weight S&P 500. WHAT IT MEANS: Positive=ALL 500 stocks rising=broad healthy rally. Negative=only the top 10 mega caps are moving=narrow market=warning sign. This is one of the most important breadth signals."),
+    ("HYG vs LQD",
      f"{bxt['credit_chg']:+.2f}pp" if "credit_chg" in bxt else "Loading...",
      clr(bxt.get("credit_chg",0)),
-     "Junk bonds vs investment grade. Falling=credit stress building=recession warning. Most important leading indicator for market health."),
+     "Junk bonds vs investment grade bonds. WHAT IT MEANS: Positive=credit market healthy=companies can borrow=economy fine. Negative=credit stress building=companies struggling=recession warning. This is THE best early recession indicator."),
     ("Small vs Large Cap",
      f"{bxt['small_vs_large']:+.2f}pp" if "small_vs_large" in bxt else "Loading...",
      clr(bxt.get("small_vs_large",0)),
-     "IWM vs SPY 1-month. Positive=small caps leading=risk-on, economy healthy. Negative=only large caps working=narrow market."),
-    ("Defensive Rotation",
-     f"{bxt['def_rotation']:+.2f}pp" if "def_rotation" in bxt else "Loading...",
-     clr(bxt.get("def_rotation",0), good_pos=False),
-     "Staples (XLP) vs Tech (XLK). Negative=tech leading=risk-on. Positive=defensives leading=investors getting cautious=potential slowdown."),
+     "Russell 2000 (IWM) vs S&P 500 (SPY). WHAT IT MEANS: Positive=small companies outperforming=domestic economy healthy=risk-on. Negative=only large multinationals working=narrow rally=potential warning."),
     ("TLT (20Y Treasury)",
      f"${bxt.get('tlt',{}).get('price',0):.2f}  {bxt.get('tlt',{}).get('chg1d',0):+.2f}%" if "tlt" in bxt else "Loading...",
      clr(bxt.get("tlt",{}).get("chg1d",0)),
-     "20-year Treasury ETF. Rising=flight to safety, stocks may fall. Falling=inflation fears or strong economy."),
-    ("Gold vs Dollar",
-     f"{bxt['gold_vs_dollar']:+.2f}pp" if "gold_vs_dollar" in bxt else "Loading...",
-     clr(bxt.get("gold_vs_dollar",0)),
-     "Gold (GLD) vs Dollar (UUP). Positive=gold outperforming=inflation/stress. Negative=dollar strong=risk-off, commodities pressured."),
+     "20-year Treasury bond ETF. WHAT IT MEANS: Rising=investors fleeing to the safety of government bonds=stocks may fall. Falling=inflation fears or confidence in economy=often good for stocks. Sudden sharp TLT spike=sell signal."),
 ]
 
-br_cols = st.columns(3)
-for i,(label,val,vc,desc) in enumerate(bm):
-    with br_cols[i%3]:
+br_c1 = st.columns(4)
+for col,(label,val,vc,desc) in zip(br_c1, breadth_metrics):
+    with col:
+        signal = "BULLISH" if vc=="#16a34a" else "BEARISH" if vc=="#dc2626" else "NEUTRAL"
+        s_bg = "#f0fdf4" if vc=="#16a34a" else "#fef2f2" if vc=="#dc2626" else "#f9fafb"
+        s_bc = "#bbf7d0" if vc=="#16a34a" else "#fecaca" if vc=="#dc2626" else "#e5e7eb"
         st.markdown(f"""
         <div class="card" style="margin-bottom:8px;">
           <div style="display:flex;align-items:center;justify-content:space-between;">
             <div class="lbl">{label}</div>
-            {tip('ℹ',desc)}
+            {tip("ℹ", desc)}
           </div>
-          <div style="font-size:20px;font-weight:700;color:{vc};margin-top:4px;">{val}</div>
+          <div style="font-size:20px;font-weight:700;color:{vc};margin-top:3px;">{val}</div>
+          <div style="display:inline-block;background:{s_bg};color:{vc};border:1px solid {s_bc};
+               font-size:9px;font-weight:600;padding:1px 6px;border-radius:3px;margin-top:4px;">{signal}</div>
         </div>""", unsafe_allow_html=True)
 
-# Count how many indicators are positive (not a sum of +1/-1)
-pos_count = 0
-total_count = 0
-if "breadth_1m" in bxt:
-    total_count+=1
-    if bxt["breadth_1m"]>0: pos_count+=1
-if "credit_chg" in bxt:
-    total_count+=1
-    if bxt["credit_chg"]>0: pos_count+=1
-if "small_vs_large" in bxt:
-    total_count+=1
-    if bxt["small_vs_large"]>0: pos_count+=1
-if "def_rotation" in bxt:
-    total_count+=1
-    if bxt["def_rotation"]<0: pos_count+=1  # negative defensive rotation = good (tech leading)
+# ── Sub-section 2: Rotation & Risk Appetite ────────────────────────────────────
+st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;letter-spacing:.06em;text-transform:uppercase;margin:14px 0 6px;">Rotation & Risk Appetite — where is money flowing?</div>', unsafe_allow_html=True)
 
-bsc_col="#16a34a" if pos_count>=3 else "#dc2626" if pos_count<=1 else "#d97706"
-bsc_lbl="Strong breadth — broad rally confirmed" if pos_count>=3 else "Weak breadth — narrow or deteriorating" if pos_count<=1 else "Mixed — selective conditions"
-bsc_bg="#f0fdf4" if pos_count>=3 else "#fef2f2" if pos_count<=1 else "#fffbeb"
-bsc_bc="#bbf7d0" if pos_count>=3 else "#fecaca" if pos_count<=1 else "#fde68a"
+rotation_metrics = [
+    ("Growth vs Value",
+     f"{bxt['growth_vs_value']:+.2f}pp" if "growth_vs_value" in bxt else "Loading...",
+     clr(bxt.get("growth_vs_value",0)),
+     "S&P Growth (IVW) vs S&P Value (IVE). WHAT IT MEANS: Positive=growth stocks (tech, high PE) leading=risk appetite high, often early bull market. Negative=value stocks (banks, energy, cheap stocks) leading=late cycle or cautious market."),
+    ("High Beta vs Low Vol",
+     f"{bxt['highbeta_vs_lowvol']:+.2f}pp" if "highbeta_vs_lowvol" in bxt else "Loading...",
+     clr(bxt.get("highbeta_vs_lowvol",0)),
+     "High Beta S&P (SPHB) vs Low Volatility S&P (SPLV). WHAT IT MEANS: Positive=traders actively taking risk, buying volatile stocks=confident market. Negative=hiding in boring low-risk stocks=fear or uncertainty. Best pure risk appetite gauge."),
+    ("Cyclicals vs Defensives",
+     f"{bxt['cyclical_vs_def']:+.2f}pp" if "cyclical_vs_def" in bxt else "Loading...",
+     clr(bxt.get("cyclical_vs_def",0)),
+     "Consumer Discretionary (XLY) vs Consumer Staples (XLP). WHAT IT MEANS: Positive=people spending on wants not just needs=economy healthy=risk-on. Negative=spending only on essentials=consumers worried=recession signal."),
+    ("Banks vs Utilities",
+     f"{bxt['banks_vs_utils']:+.2f}pp" if "banks_vs_utils" in bxt else "Loading...",
+     clr(bxt.get("banks_vs_utils",0)),
+     "Financials (XLF) vs Utilities (XLU). WHAT IT MEANS: Positive=banks outperforming=rates expected high, economy strong, yield curve steepening. Negative=utilities leading=investors hiding in defensive stocks=rate cut expected or fear rising."),
+    ("Copper vs Gold",
+     f"{bxt['copper_vs_gold']:+.2f}pp" if "copper_vs_gold" in bxt else "Loading...",
+     clr(bxt.get("copper_vs_gold",0)),
+     "Copper futures vs Gold futures. WHAT IT MEANS: Positive=copper (industrial metal) beating gold (safe haven)=global growth expected, factories active. Negative=gold beating copper=fear over growth, investors seeking safety. Called the risk ratio by professionals."),
+    ("Semis vs S&P",
+     f"{bxt['semis_vs_spy']:+.2f}pp" if "semis_vs_spy" in bxt else "Loading...",
+     clr(bxt.get("semis_vs_spy",0)),
+     "Semiconductors (SOXX) vs S&P 500 (SPY). WHAT IT MEANS: Positive=chip stocks leading the whole market=AI/tech demand healthy=risk-on. Semis typically lead QQQ by 2-3 weeks. Falling semis = tech weakness coming. Watch this before buying any tech stock."),
+    ("Momentum vs Min Vol",
+     f"{bxt['momentum_vs_minvol']:+.2f}pp" if "momentum_vs_minvol" in bxt else "Loading...",
+     clr(bxt.get("momentum_vs_minvol",0)),
+     "Momentum ETF (MTUM) vs Minimum Volatility ETF (USMV). WHAT IT MEANS: Positive=trending stocks winning=clear market direction, follow the trend. Negative=low volatility stocks winning=uncertain choppy market, no clear trend, be more cautious with momentum plays."),
+    ("Gold vs Dollar",
+     f"{bxt['gold_vs_dollar']:+.2f}pp" if "gold_vs_dollar" in bxt else "Loading...",
+     clr(bxt.get("gold_vs_dollar",0)),
+     "Gold (GLD) vs Dollar (UUP). WHAT IT MEANS: Positive=gold beating dollar=inflation fears, geopolitical stress, dollar weakening. Negative=dollar strong=risk-off, commodity prices pressured, EM stocks hurt. Rising gold+falling dollar=classic inflation trade."),
+]
 
-# Explain each indicator's reading
-explain = []
-if "breadth_1m" in bxt: explain.append(f"RSP-SPY: {'✓ Broad' if bxt['breadth_1m']>0 else '✗ Narrow'}")
-if "credit_chg" in bxt: explain.append(f"Credit: {'✓ Healthy' if bxt['credit_chg']>0 else '✗ Stress'}")
-if "small_vs_large" in bxt: explain.append(f"Small caps: {'✓ Leading' if bxt['small_vs_large']>0 else '✗ Lagging'}")
-if "def_rotation" in bxt: explain.append(f"Defensives: {'✓ Not leading' if bxt['def_rotation']<0 else '✗ Rotating in'}")
+rot_cols = st.columns(4)
+for i,(label,val,vc,desc) in enumerate(rotation_metrics):
+    with rot_cols[i%4]:
+        signal = "RISK ON" if vc=="#16a34a" else "RISK OFF" if vc=="#dc2626" else "NEUTRAL"
+        s_bg = "#f0fdf4" if vc=="#16a34a" else "#fef2f2" if vc=="#dc2626" else "#f9fafb"
+        s_bc = "#bbf7d0" if vc=="#16a34a" else "#fecaca" if vc=="#dc2626" else "#e5e7eb"
+        st.markdown(f"""
+        <div class="card" style="margin-bottom:8px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;">
+            <div class="lbl">{label}</div>
+            {tip("ℹ", desc)}
+          </div>
+          <div style="font-size:20px;font-weight:700;color:{vc};margin-top:3px;">{val}</div>
+          <div style="display:inline-block;background:{s_bg};color:{vc};border:1px solid {s_bc};
+               font-size:9px;font-weight:600;padding:1px 6px;border-radius:3px;margin-top:4px;">{signal}</div>
+        </div>""", unsafe_allow_html=True)
 
-st.markdown(f'''<div style="background:{bsc_bg};border:1px solid {bsc_bc};border-radius:6px;padding:10px 14px;margin-top:4px;">
-  <div style="font-size:12px;"><span style="font-weight:700;color:{bsc_col};">Overall Breadth: {bsc_lbl}</span>
-  <span style="color:#9ca3af;font-size:11px;margin-left:8px;">({pos_count}/{total_count} indicators positive)</span></div>
-  <div style="font-size:11px;color:#6b7280;margin-top:5px;">{" &nbsp;·&nbsp; ".join(explain)}</div>
-</div>''', unsafe_allow_html=True)
+# ── Overall score ──────────────────────────────────────────────────────────────
+bull_signals = []
+bear_signals = []
+checks = [
+    ("breadth_1m", True, "Broad market"),
+    ("credit_chg", True, "Credit healthy"),
+    ("small_vs_large", True, "Small caps leading"),
+    ("growth_vs_value", True, "Growth leading"),
+    ("highbeta_vs_lowvol", True, "Risk appetite high"),
+    ("cyclical_vs_def", True, "Cyclicals leading"),
+    ("banks_vs_utils", True, "Banks leading"),
+    ("copper_vs_gold", True, "Copper over gold"),
+    ("semis_vs_spy", True, "Semis leading"),
+    ("momentum_vs_minvol", True, "Momentum working"),
+    ("def_rotation", False, "Tech over defensives"),  # negative = bullish
+]
+for key, pos_is_bull, label in checks:
+    if key in bxt:
+        val = bxt[key]
+        is_bull = val > 0 if pos_is_bull else val < 0
+        if is_bull: bull_signals.append(label)
+        else: bear_signals.append(label)
+
+total = len(bull_signals) + len(bear_signals)
+bull_pct = int(len(bull_signals)/total*100) if total>0 else 50
+score_col = "#16a34a" if bull_pct>=65 else "#dc2626" if bull_pct<=35 else "#d97706"
+score_lbl = "Risk-On — majority of signals bullish" if bull_pct>=65 else "Risk-Off — majority of signals bearish" if bull_pct<=35 else "Mixed — no clear consensus"
+score_bg = "#f0fdf4" if bull_pct>=65 else "#fef2f2" if bull_pct<=35 else "#fffbeb"
+score_bc = "#bbf7d0" if bull_pct>=65 else "#fecaca" if bull_pct<=35 else "#fde68a"
+
+st.markdown(f"""
+<div style="background:{score_bg};border:1px solid {score_bc};border-radius:8px;padding:12px 16px;margin-top:4px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+    <div>
+      <span style="font-size:13px;font-weight:700;color:{score_col};">Overall Signal: {score_lbl}</span>
+      <span style="color:#9ca3af;font-size:11px;margin-left:8px;">{len(bull_signals)}/{total} indicators bullish ({bull_pct}%)</span>
+    </div>
+    <div style="height:10px;width:200px;background:#e5e7eb;border-radius:5px;overflow:hidden;">
+      <div style="height:10px;width:{bull_pct}%;background:{score_col};border-radius:5px;"></div>
+    </div>
+  </div>
+  <div style="margin-top:8px;font-size:11px;color:#6b7280;">
+    <span style="color:#16a34a;font-weight:600;">Bullish:</span> {", ".join(bull_signals) if bull_signals else "None"} &nbsp;&nbsp;
+    <span style="color:#dc2626;font-weight:600;">Bearish:</span> {", ".join(bear_signals) if bear_signals else "None"}
+  </div>
+</div>""", unsafe_allow_html=True)
 
 
 # ════════════════════════════════════════════════════════════════════════════════

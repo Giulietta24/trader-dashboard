@@ -1363,9 +1363,6 @@ for tab, key in zip(tabs_th, tab_keys):
             score=t["score"]; avg_m=t.get("avg_mom",0)
             sc="#16a34a" if score>=65 else "#d97706" if score>=45 else "#dc2626"
             flag=""
-            if intel:
-                if any(u["name"]==t["name"] for u in upgrades):   flag=" ⬆️"
-                if any(d["name"]==t["name"] for d in downgrades):  flag=" ⬇️"
 
             # Check if this is a custom/approved theme (can be removed)
             is_custom = any(
@@ -1901,9 +1898,6 @@ for tab, key in zip(tabs_th, tab_keys):
             score=t["score"]; avg_m=t.get("avg_mom",0)
             sc="#16a34a" if score>=65 else "#d97706" if score>=45 else "#dc2626"
             flag=""
-            if intel:
-                if any(u["name"]==t["name"] for u in upgrades):  flag=" ⬆️"
-                if any(d["name"]==t["name"] for d in downgrades): flag=" ⬇️"
 
             with st.expander(f"**{t['name']}**{flag}  —  Score: {score}/100  ·  {avg_m:+.1f}%"):
                 cl, cr = st.columns([2, 1])
@@ -3378,9 +3372,6 @@ for tab, key in zip(tabs_th, tab_keys):
             score=t["score"]; avg_m=t.get("avg_mom",0)
             sc="#16a34a" if score>=65 else "#d97706" if score>=45 else "#dc2626"
             flag=""
-            if intel:
-                if any(u["name"]==t["name"] for u in upgrades):  flag=" ⬆️"
-                if any(d["name"]==t["name"] for d in downgrades): flag=" ⬇️"
 
             with st.expander(f"**{t['name']}**{flag}  —  Score: {score}/100  ·  {avg_m:+.1f}%"):
                 cl, cr = st.columns([2, 1])

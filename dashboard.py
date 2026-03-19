@@ -288,6 +288,142 @@ def get_fred_inflation():
         except: pass
     return out
 
+
+def get_top_movers(universe, top_n=60):
+    """Fetch 1-month performance for all tickers, return top movers."""
+    movers = []
+    for sym in universe:
+        try:
+            h = yf.Ticker(sym).history(period="3mo")
+            if not h.empty and len(h) >= 22:
+                p   = h["Close"].iloc[-1]
+                p1w = h["Close"].iloc[-6]  if len(h) >= 6  else p
+                p1m = h["Close"].iloc[-22]
+                p3m = h["Close"].iloc[0]
+                chg1w = (p - p1w) / p1w * 100
+                chg1m = (p - p1m) / p1m * 100
+                chg3m = (p - p3m) / p3m * 100
+                # Composite momentum score
+                composite = chg1w * 0.3 + chg1m * 0.5 + chg3m * 0.2
+                movers.append({
+                    "sym": sym, "price": round(p, 2),
+                    "chg1w": round(chg1w, 1), "chg1m": round(chg1m, 1),
+                    "chg3m": round(chg3m, 1), "composite": round(composite, 1)
+                })
+        except:
+            pass
+    # Sort by absolute composite score — find both strong up AND strong down
+    movers.sort(key=lambda x: -abs(x["composite"]))
+    return movers[:top_n]
+
+@st.cache_data(ttl=86400)
+def get_dynamic_themes(movers_json: str, sector_perf: str, vix: float,
+                        spy_1m: float, date_str: str) -> list:
+    """
+    Claude receives top price movers and builds the ENTIRE theme universe
+    from scratch — no hardcoded themes, fully dynamic.
+    Returns list of theme dicts.
+    """
+    key = _anthropic_key()
+    if not key:
+        return []
+    try:
+        prompt = f"""You are a top hedge fund analyst. Today is {date_str}.
+
+LIVE MARKET DATA:
+VIX: {vix:.1f} | SPY 1M: {spy_1m:+.1f}%
+Sectors: {sector_perf}
+
+TOP PRICE MOVERS (composite 1W+1M+3M momentum):
+{movers_json}
+
+Your job: Look at which stocks are moving together and WHY. Group them into themes that explain what is actually happening in the market RIGHT NOW.
+
+Rules:
+- Create 8-12 themes total based purely on what the data shows
+- Each theme MUST be driven by stocks actually in the movers list above
+- Theme names should describe the actual market narrative (e.g. "Iran War Oil Premium", "GLP-1 Weight Loss Revolution", "AI Data Centre Power Crisis") — not generic names
+- Classify each theme: "hot" (score 65-100), "emerging" (45-64), or "fading" (score 10-44)
+- Score reflects actual momentum strength from the data
+- Include 4-8 tickers per theme from the movers list
+- 1-2 sentence desc explaining WHY this theme is moving right now
+
+Return ONLY valid JSON (no markdown, no backticks, no explanation):
+[
+  {{
+    "name": "Theme Name — specific and descriptive",
+    "category": "hot",
+    "score": 85,
+    "subsectors": ["Sub1", "Sub2", "Sub3"],
+    "tickers": ["SYM1","SYM2","SYM3","SYM4"],
+    "desc": "Why this theme is moving right now in one or two sentences.",
+    "option_setup": "Best options strategy for this theme right now: e.g. Long calls on NVDA — momentum strong, buy the dip on weakness. Or CSPs on LLY — premium high, willing to own at lower price."
+  }}
+]"""
+
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 2000,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=30
+        )
+        text = r.json().get("content", [{}])[0].get("text", "").strip()
+        # Strip any accidental markdown
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        themes = json.loads(text)
+        # Validate structure
+        valid = []
+        for t in themes:
+            if all(k in t for k in ["name","category","score","tickers","desc"]):
+                valid.append(t)
+        return valid
+    except Exception as e:
+        return []
+
+@st.cache_data(ttl=3600)
+def score_theme_tickers(themes: list) -> list:
+    """Add live price momentum data to each theme's tickers."""
+    scored = []
+    for theme in themes:
+        td = []
+        for sym in theme.get("tickers", [])[:8]:
+            try:
+                h = yf.Ticker(sym).history(period="3mo")
+                if not h.empty and len(h) >= 6:
+                    p   = h["Close"].iloc[-1]
+                    p1w = h["Close"].iloc[-6] if len(h) >= 6 else p
+                    p1m = h["Close"].iloc[-22] if len(h) >= 22 else h["Close"].iloc[0]
+                    p3m = h["Close"].iloc[0]
+                    chg1w = (p - p1w) / p1w * 100
+                    chg1m = (p - p1m) / p1m * 100
+                    chg3m = (p - p3m) / p3m * 100
+                    wt    = chg1w * 0.3 + chg1m * 0.5 + chg3m * 0.2
+                    td.append({"sym": sym, "price": round(p, 2),
+                               "chg1w": round(chg1w, 1), "chg1m": round(chg1m, 1),
+                               "chg3m": round(chg3m, 1), "weighted": round(wt, 1)})
+            except:
+                pass
+        td.sort(key=lambda x: -x["weighted"])
+        # Recalculate score from actual data if we have ticker prices
+        if td:
+            avg = sum(t["weighted"] for t in td) / len(td)
+            live_score = max(0, min(100, int(50 + avg * 2)))
+        else:
+            live_score = theme.get("score", 50)
+        scored.append({**theme, "ticker_data": td, "avg_mom": round(avg if td else 0, 1),
+                       "score": live_score})
+    # Sort by score
+    scored.sort(key=lambda x: -x["score"])
+    return scored
+
+
+#
+
 @st.cache_data(ttl=600)
 def get_short_interest(syms):
     out=[]
@@ -1032,58 +1168,80 @@ manual_themes = []
 for cat_key in ["new_hot","new_fading","new_emerging"]:
     manual_themes.extend(st.session_state.approved_recs.get(cat_key,[]))
 
-if ant_key:
-    # Step 1: Get real movers from Yahoo Finance
-    with st.spinner("Scanning market movers..."):
-        movers = get_top_movers()
+# Broad watchlist — Claude will cluster these into themes
+MOVER_WATCHLIST = [
+    "NVDA","MSFT","AAPL","GOOGL","META","AMZN","TSLA","AVGO","ORCL","CRM",
+    "JPM","GS","BAC","V","MA","AXP","COF","SCHW","BX","BRK-B",
+    "XOM","CVX","COP","OXY","LNG","CEG","VST","CCJ","ETN","GEV",
+    "LMT","RTX","NOC","GD","BA","PLTR","KTOS","HII","LDOS","CACI",
+    "LLY","NVO","UNH","JNJ","VRTX","REGN","AMGN","ISRG","MRNA","DXCM",
+    "GE","CAT","DE","HON","EMR","ROK","PWR","FLR","MTZ","WM",
+    "HD","WMT","COST","TGT","MCD","SBUX","NKE","LULU","ROST","TJX",
+    "AMD","SMCI","ARM","ANET","MRVL","DELL","MU","QCOM","INTC","HPE",
+    "IONQ","RGTI","HIMS","SOUN","BBAI","MP","UUUU","CELH","AXON","RKLB",
+    "TSM","ASML","NVO","PDD","MELI","NU","SE","BABA","JD","BIDU",
+    "AMT","PLD","EQIX","NEE","DUK","SO","AEP","PCG","SRE","D",
+    "FCX","NEM","ALB","LAC","VALE","RIO","BHP","AA","CLF","STLD",
+]
 
-    # Step 2: Claude analyses movers and builds themes from scratch
-    movers_json = json.dumps(movers)
-    manual_json = json.dumps(manual_themes) if manual_themes else "[]"
+with st.spinner("Scanning 120 stocks for market movers..."):
+    movers = get_top_movers(MOVER_WATCHLIST)
+
+if ant_key and movers:
+    movers_summary = "\n".join([
+        f"{m['sym']}: 1W={m['chg1w']:+.1f}% 1M={m['chg1m']:+.1f}% 3M={m['chg3m']:+.1f}%"
+        for m in movers[:50]
+    ])
     with st.spinner("Claude building today's themes from real market data..."):
-        dynamic = get_dynamic_themes(
-            movers_json, sector_perf_str,
-            spy_d.get("chg1m",0), vix_price, today_str, manual_json
+        dynamic_themes = get_dynamic_themes(
+            movers_summary, sector_perf_str,
+            vix_price, spy_d.get("chg1m",0), today_str
         )
 else:
-    movers = get_top_movers()
-    dynamic = None
+    dynamic_themes = []
 
-# Step 3: Build universe from Claude output or fallback to price-momentum only
-if dynamic and dynamic.get("themes"):
-    # Apply custom tickers on top of Claude's selections
-    universe_merged = {"hot":[],"fading":[],"emerging":[]}
-    for t in dynamic["themes"]:
+# Build universe_merged from Claude themes + manual additions
+universe_merged = {"hot":[],"fading":[],"emerging":[]}
+
+if dynamic_themes:
+    # Claude returned a list of themes
+    for t in dynamic_themes:
         cat = t.get("category","emerging")
         if cat not in universe_merged: cat = "emerging"
         t2 = copy.deepcopy(t)
         extras = st.session_state.custom_tickers.get(t2["name"],[])
-        t2["tickers"] = list(dict.fromkeys(t2["tickers"] + extras))
+        t2["tickers"] = list(dict.fromkeys(t2.get("tickers",[]) + extras))
+        if not t2.get("subsectors"): t2["subsectors"] = []
         universe_merged[cat].append(t2)
 
-    # Show daily note
-    if dynamic.get("daily_note"):
-        st.markdown(f"""
-        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 16px;margin-bottom:10px;">
-          <div style="font-size:11px;font-weight:700;color:#1d4ed8;margin-bottom:5px;">
-            🤖 Daily Theme Intelligence · Claude Haiku · Built from {len(movers)} real price movers · {today_str}
-          </div>
-          <div style="font-size:12px;color:#1e3a5f;line-height:1.6;">{dynamic["daily_note"]}</div>
-        </div>""", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 16px;margin-bottom:10px;">
+      <div style="font-size:11px;font-weight:700;color:#1d4ed8;margin-bottom:4px;">
+        🤖 {len(dynamic_themes)} themes built from {len(movers)} real price movers · Claude Haiku · {today_str} · Refreshes daily
+      </div>
+    </div>""", unsafe_allow_html=True)
 else:
-    # No Anthropic key — build purely from price momentum of a broad watchlist
-    if dynamic is None and not ant_key:
-        st.info("Add ANTHROPIC_API_KEY to Streamlit secrets for fully dynamic AI-driven theme generation. Showing price momentum ranking instead.")
-    universe_merged = {"hot":[],"fading":[],"emerging":[]}
-    # Cluster top movers into basic themes by sector ETF correlation
-    hot_syms   = [m["sym"] for m in movers[:20]]
-    fading_syms= [m["sym"] for m in sorted(movers, key=lambda x:x["chg1m"])[:10]]
-    universe_merged["hot"]    = [{"name":"Top Momentum","tickers":hot_syms[:10],"subsectors":[],"desc":"Stocks with strongest 1-month momentum","options_play":"LONG CALL","catalyst":"Watch for continued momentum"}]
-    universe_merged["fading"] = [{"name":"Weakest Momentum","tickers":fading_syms[:10],"subsectors":[],"desc":"Stocks with weakest 1-month momentum","options_play":"LONG PUT","catalyst":"Watch for further weakness"}]
-    universe_merged["emerging"]= []
-    for cat_key in ["new_hot","new_fading","new_emerging"]:
-        cat = cat_key.replace("new_","")
-        universe_merged[cat].extend(st.session_state.approved_recs.get(cat_key,[]))
+    # No AI key or Claude failed — show top/bottom movers directly
+    if not ant_key:
+        st.info("Add ANTHROPIC_API_KEY to Streamlit secrets for fully dynamic AI-driven themes. Showing raw momentum ranking.")
+    if movers:
+        hot_syms    = [m["sym"] for m in movers if m["chg1m"] > 0][:12]
+        fading_syms = [m["sym"] for m in reversed(movers) if m["chg1m"] < 0][:12]
+        if hot_syms:
+            universe_merged["hot"] = [{"name":"Top Momentum Stocks","tickers":hot_syms,
+                "subsectors":[],"desc":"Stocks with strongest composite momentum this month.",
+                "option_setup":"LONG CALL — momentum is positive, look for breakout entries"}]
+        if fading_syms:
+            universe_merged["fading"] = [{"name":"Weakest Momentum Stocks","tickers":fading_syms,
+                "subsectors":[],"desc":"Stocks with weakest composite momentum this month.",
+                "option_setup":"LONG PUT or PUT SPREAD — momentum negative, watch for further breakdown"}]
+
+# Add any manually added themes
+for cat_key in ["new_hot","new_fading","new_emerging"]:
+    cat = cat_key.replace("new_","")
+    for mt in st.session_state.approved_recs.get(cat_key,[]):
+        if not any(t.get("name")==mt.get("name") for t in universe_merged.get(cat,[])):
+            universe_merged[cat].append(mt)
 
 # ── Score themes from live prices then auto-classify ─────────────────────────
 # Flatten all themes from universe_merged, score each from real prices
@@ -2175,141 +2333,6 @@ SCAN_UNIVERSE = [
     "GME","AMC","BBBY","BYND","SOFI","OPEN",
 ]
 
-@st.cache_data(ttl=3600)
-def get_top_movers(universe, top_n=60):
-    """Fetch 1-month performance for all tickers, return top movers."""
-    movers = []
-    for sym in universe:
-        try:
-            h = yf.Ticker(sym).history(period="3mo")
-            if not h.empty and len(h) >= 22:
-                p   = h["Close"].iloc[-1]
-                p1w = h["Close"].iloc[-6]  if len(h) >= 6  else p
-                p1m = h["Close"].iloc[-22]
-                p3m = h["Close"].iloc[0]
-                chg1w = (p - p1w) / p1w * 100
-                chg1m = (p - p1m) / p1m * 100
-                chg3m = (p - p3m) / p3m * 100
-                # Composite momentum score
-                composite = chg1w * 0.3 + chg1m * 0.5 + chg3m * 0.2
-                movers.append({
-                    "sym": sym, "price": round(p, 2),
-                    "chg1w": round(chg1w, 1), "chg1m": round(chg1m, 1),
-                    "chg3m": round(chg3m, 1), "composite": round(composite, 1)
-                })
-        except:
-            pass
-    # Sort by absolute composite score — find both strong up AND strong down
-    movers.sort(key=lambda x: -abs(x["composite"]))
-    return movers[:top_n]
-
-@st.cache_data(ttl=86400)
-def get_dynamic_themes(movers_json: str, sector_perf: str, vix: float,
-                        spy_1m: float, date_str: str) -> list:
-    """
-    Claude receives top price movers and builds the ENTIRE theme universe
-    from scratch — no hardcoded themes, fully dynamic.
-    Returns list of theme dicts.
-    """
-    key = _anthropic_key()
-    if not key:
-        return []
-    try:
-        prompt = f"""You are a top hedge fund analyst. Today is {date_str}.
-
-LIVE MARKET DATA:
-VIX: {vix:.1f} | SPY 1M: {spy_1m:+.1f}%
-Sectors: {sector_perf}
-
-TOP PRICE MOVERS (composite 1W+1M+3M momentum):
-{movers_json}
-
-Your job: Look at which stocks are moving together and WHY. Group them into themes that explain what is actually happening in the market RIGHT NOW.
-
-Rules:
-- Create 8-12 themes total based purely on what the data shows
-- Each theme MUST be driven by stocks actually in the movers list above
-- Theme names should describe the actual market narrative (e.g. "Iran War Oil Premium", "GLP-1 Weight Loss Revolution", "AI Data Centre Power Crisis") — not generic names
-- Classify each theme: "hot" (score 65-100), "emerging" (45-64), or "fading" (score 10-44)
-- Score reflects actual momentum strength from the data
-- Include 4-8 tickers per theme from the movers list
-- 1-2 sentence desc explaining WHY this theme is moving right now
-
-Return ONLY valid JSON (no markdown, no backticks, no explanation):
-[
-  {{
-    "name": "Theme Name — specific and descriptive",
-    "category": "hot",
-    "score": 85,
-    "subsectors": ["Sub1", "Sub2", "Sub3"],
-    "tickers": ["SYM1","SYM2","SYM3","SYM4"],
-    "desc": "Why this theme is moving right now in one or two sentences.",
-    "option_setup": "Best options strategy for this theme right now: e.g. Long calls on NVDA — momentum strong, buy the dip on weakness. Or CSPs on LLY — premium high, willing to own at lower price."
-  }}
-]"""
-
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
-                     "content-type": "application/json"},
-            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 2000,
-                  "messages": [{"role": "user", "content": prompt}]},
-            timeout=30
-        )
-        text = r.json().get("content", [{}])[0].get("text", "").strip()
-        # Strip any accidental markdown
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        themes = json.loads(text)
-        # Validate structure
-        valid = []
-        for t in themes:
-            if all(k in t for k in ["name","category","score","tickers","desc"]):
-                valid.append(t)
-        return valid
-    except Exception as e:
-        return []
-
-@st.cache_data(ttl=3600)
-def score_theme_tickers(themes: list) -> list:
-    """Add live price momentum data to each theme's tickers."""
-    scored = []
-    for theme in themes:
-        td = []
-        for sym in theme.get("tickers", [])[:8]:
-            try:
-                h = yf.Ticker(sym).history(period="3mo")
-                if not h.empty and len(h) >= 6:
-                    p   = h["Close"].iloc[-1]
-                    p1w = h["Close"].iloc[-6] if len(h) >= 6 else p
-                    p1m = h["Close"].iloc[-22] if len(h) >= 22 else h["Close"].iloc[0]
-                    p3m = h["Close"].iloc[0]
-                    chg1w = (p - p1w) / p1w * 100
-                    chg1m = (p - p1m) / p1m * 100
-                    chg3m = (p - p3m) / p3m * 100
-                    wt    = chg1w * 0.3 + chg1m * 0.5 + chg3m * 0.2
-                    td.append({"sym": sym, "price": round(p, 2),
-                               "chg1w": round(chg1w, 1), "chg1m": round(chg1m, 1),
-                               "chg3m": round(chg3m, 1), "weighted": round(wt, 1)})
-            except:
-                pass
-        td.sort(key=lambda x: -x["weighted"])
-        # Recalculate score from actual data if we have ticker prices
-        if td:
-            avg = sum(t["weighted"] for t in td) / len(td)
-            live_score = max(0, min(100, int(50 + avg * 2)))
-        else:
-            live_score = theme.get("score", 50)
-        scored.append({**theme, "ticker_data": td, "avg_mom": round(avg if td else 0, 1),
-                       "score": live_score})
-    # Sort by score
-    scored.sort(key=lambda x: -x["score"])
-    return scored
-
-
-# ════════════════════════════════════════════════════════════════════════════════
 # ════════════════════════════════════════════════════════════════════════════════
 # LOAD ALL DATA
 # ════════════════════════════════════════════════════════════════════════════════

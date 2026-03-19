@@ -19,6 +19,11 @@ def _anthropic_key():
 st.set_page_config(page_title="Trader Intelligence Dashboard", page_icon="📊",
                    layout="wide", initial_sidebar_state="collapsed")
 
+# ── SESSION STATE — must be before any section that uses it ───────────────────
+if "custom_tickers"  not in st.session_state: st.session_state.custom_tickers  = {}
+if "approved_recs"   not in st.session_state: st.session_state.approved_recs   = {}
+if "hidden_themes"   not in st.session_state: st.session_state.hidden_themes   = []
+
 # ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -57,6 +62,11 @@ section[data-testid="stSidebar"]{display:none!important;}
 """, unsafe_allow_html=True)
 
 # ── COLOUR HELPERS ─────────────────────────────────────────────────────────────
+# Initialise all session state here — MUST be before any usage
+if "custom_tickers"  not in st.session_state: st.session_state.custom_tickers  = {}
+if "approved_recs"   not in st.session_state: st.session_state.approved_recs   = {}
+if "hidden_themes"   not in st.session_state: st.session_state.hidden_themes   = []
+if "heat_period"     not in st.session_state: st.session_state.heat_period     = "1d"
 def clr(v, good_pos=True):
     return ("#16a34a" if v>=0 else "#dc2626") if good_pos else ("#dc2626" if v>=0 else "#16a34a")
 def arr(v): return "▲" if v>=0 else "▼"
@@ -1170,9 +1180,6 @@ with st.expander("⚙️ Manage Themes — Add / Remove / Hide", expanded=False)
                             st.session_state.approved_recs[cat_key] = [e for e in lst if e.get("name") != ct["name"]]
                         st.rerun()
 
-if "hidden_themes" not in st.session_state:
-    st.session_state.hidden_themes = []
-
 # Filter hidden themes from all lists
 for k in reclassified:
     reclassified[k] = [t for t in reclassified[k]
@@ -1671,8 +1678,6 @@ with st.expander("⚙️ Manage Themes — add, remove, edit ticker baskets", ex
             with h_col1:
                 if st.button("👁 Hide from dashboard", key="btn_hide_theme", use_container_width=True):
                     if selected_to_hide != "— choose —":
-                        if "hidden_themes" not in st.session_state:
-                            st.session_state.hidden_themes = []
                         if selected_to_hide not in st.session_state.hidden_themes:
                             st.session_state.hidden_themes.append(selected_to_hide)
                             st.rerun()
@@ -1715,8 +1720,6 @@ with st.expander("⚙️ Manage Themes — add, remove, edit ticker baskets", ex
                     st.rerun()
 
 # Filter hidden themes
-if "hidden_themes" not in st.session_state:
-    st.session_state.hidden_themes = []
 for k in reclassified:
     reclassified[k] = [t for t in reclassified[k] if t["name"] not in st.session_state.hidden_themes]
 
@@ -2307,12 +2310,6 @@ def score_theme_tickers(themes: list) -> list:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SESSION STATE
-# ════════════════════════════════════════════════════════════════════════════════
-if "custom_tickers" not in st.session_state: st.session_state.custom_tickers={}
-if "approved_recs"  not in st.session_state: st.session_state.approved_recs={}
-if "heat_period"    not in st.session_state: st.session_state.heat_period="1d"
-
 # ════════════════════════════════════════════════════════════════════════════════
 # LOAD ALL DATA
 # ════════════════════════════════════════════════════════════════════════════════
@@ -3293,8 +3290,6 @@ with st.expander("⚙️ Manage Themes — add, remove, edit ticker baskets", ex
             with h_col1:
                 if st.button("👁 Hide from dashboard", key="btn_hide_theme", use_container_width=True):
                     if selected_to_hide != "— choose —":
-                        if "hidden_themes" not in st.session_state:
-                            st.session_state.hidden_themes = []
                         if selected_to_hide not in st.session_state.hidden_themes:
                             st.session_state.hidden_themes.append(selected_to_hide)
                             st.rerun()
@@ -3337,8 +3332,6 @@ with st.expander("⚙️ Manage Themes — add, remove, edit ticker baskets", ex
                     st.rerun()
 
 # Filter hidden themes
-if "hidden_themes" not in st.session_state:
-    st.session_state.hidden_themes = []
 for k in reclassified:
     reclassified[k] = [t for t in reclassified[k] if t["name"] not in st.session_state.hidden_themes]
 

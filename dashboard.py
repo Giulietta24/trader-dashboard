@@ -1202,11 +1202,29 @@ if ant_key and movers:
 else:
     dynamic_themes = []
 
-# Build universe_merged from Claude themes + manual additions
+# ── SEED THEMES — always shown when Claude hasn't run yet ─────────────────────
+# These are scored from LIVE prices so values are always real even if names are fixed
+SEED_THEMES = [
+    {"name":"AI & Semiconductors",     "category":"hot",      "subsectors":["Chips","Data Centres","Networking","AI Software"],  "tickers":["NVDA","AMD","AVGO","ARM","SMCI","ANET","MRVL","DELL","ORCL","CRM"],  "desc":"AI infrastructure buildout — chips, servers, power and software.", "option_setup":"LONG CALL on dips — strongest multi-year capex cycle"},
+    {"name":"Defense & Aerospace",     "category":"hot",      "subsectors":["Weapons","Cyber","Space","NATO"],                    "tickers":["LMT","RTX","NOC","GD","BA","PLTR","KTOS","HII","LDOS","CACI"],       "desc":"Global rearmament cycle accelerating. NATO spend rising.", "option_setup":"LONG CALL or CSP — strong tailwinds, elevated premiums"},
+    {"name":"Energy & Power Grid",     "category":"hot",      "subsectors":["Nuclear","LNG","Grid","Utilities"],                  "tickers":["CEG","VST","CCJ","ETN","LNG","OKE","NEE","GEV","NRG","EXC"],         "desc":"AI power demand + energy security driving nuclear and grid investment.", "option_setup":"CSP on pullbacks — strong dividend support, high premiums"},
+    {"name":"Financials & Banks",      "category":"hot",      "subsectors":["Investment Banks","Credit","Insurance","Fintech"],   "tickers":["JPM","GS","BAC","V","MA","AXP","COF","SCHW","BX","MS"],             "desc":"High rates benefiting bank margins. Dealmaking and credit cycle.", "option_setup":"CSP — strong earnings, high IV around results"},
+    {"name":"Industrials & Reshoring", "category":"emerging", "subsectors":["Automation","Construction","Machinery","Supply Chain"],"tickers":["GE","CAT","DE","HON","EMR","ROK","PWR","FLR","MTZ","WM"],           "desc":"US manufacturing capex supercycle. Reshoring driving orders.", "option_setup":"LONG CALL SPREAD — steady grind higher, reduce cost with spread"},
+    {"name":"Biotech & GLP-1",         "category":"emerging", "subsectors":["Obesity Drugs","Oncology","Gene Therapy","Devices"], "tickers":["LLY","NVO","VRTX","REGN","AMGN","ISRG","DXCM","MRNA","EDIT","CRSP"], "desc":"GLP-1 obesity revolution. Gene editing and oncology breakthroughs.", "option_setup":"LONG CALL before catalysts — high IV, binary events"},
+    {"name":"Consumer Discretionary",  "category":"emerging", "subsectors":["Retail","Restaurants","Autos","E-commerce"],         "tickers":["AMZN","HD","COST","TGT","MCD","SBUX","NKE","LULU","ROST","TJX"],    "desc":"Consumer spending resilience. Premium brands and value retail.", "option_setup":"CSP — high quality names, collect premium on dips"},
+    {"name":"ESG & Clean Energy",      "category":"fading",   "subsectors":["Solar","Wind","EV Charging","Carbon"],               "tickers":["ENPH","SEDG","RUN","PLUG","FCEL","BLNK","CHPT","NOVA","ARRY","BE"],  "desc":"Policy headwinds and high rates hurting project financing.", "option_setup":"LONG PUT SPREAD — downtrend intact, limit risk with spread"},
+    {"name":"China & Emerging Markets","category":"fading",   "subsectors":["E-commerce","EV","Internet","Consumer"],             "tickers":["BABA","JD","PDD","NIO","BIDU","LI","XPEV","BILI","MELI","SE"],       "desc":"Geopolitical risk and weak consumer confidence weighing on returns.", "option_setup":"LONG PUT — elevated risk, watch macro triggers"},
+    {"name":"Quantum Computing",       "category":"emerging", "subsectors":["Hardware","Software","Error Correction"],            "tickers":["IONQ","RGTI","QUBT","IBM","GOOGL","MSFT","QBTS","ARQQ","HON","NVDA"],"desc":"Early hardware race accelerating. Long-term transformative potential.", "option_setup":"Small LONG CALL — speculative, size small, high reward/risk"},
+    {"name":"Humanoid Robotics",       "category":"emerging", "subsectors":["Robot Hardware","AI Control","Automation"],          "tickers":["TSLA","NVDA","ABB","HON","PATH","FANUC","AXON","RKLB","AI","BRZE"],  "desc":"Labor shortage + AI = humanoid robot demand building.", "option_setup":"LONG CALL LEAP — 12-18 month horizon, early positioning"},
+    {"name":"Speculative / Meme",      "category":"fading",   "subsectors":["Unprofitable Growth","SPACs","High Short Interest"],  "tickers":["SOFI","OPEN","SPCE","PTON","GME","AMC","BYND","BBAI","SOUN","IONQ"], "desc":"Rate-sensitive cash-burning companies. Speculative flows volatile.", "option_setup":"LONG PUT or avoid — high risk, unpredictable"},
+]
+
+# Build universe_merged from Claude themes (if available) or seed themes
 universe_merged = {"hot":[],"fading":[],"emerging":[]}
 
 if dynamic_themes:
-    # Claude returned a list of themes
+    # Claude returned fresh dynamic themes — use those
+    source_label = f"🤖 {len(dynamic_themes)} themes built from {len(movers)} real price movers · Claude Haiku · {today_str}"
     for t in dynamic_themes:
         cat = t.get("category","emerging")
         if cat not in universe_merged: cat = "emerging"
@@ -1215,28 +1233,25 @@ if dynamic_themes:
         t2["tickers"] = list(dict.fromkeys(t2.get("tickers",[]) + extras))
         if not t2.get("subsectors"): t2["subsectors"] = []
         universe_merged[cat].append(t2)
-
     st.markdown(f"""
     <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 16px;margin-bottom:10px;">
-      <div style="font-size:11px;font-weight:700;color:#1d4ed8;margin-bottom:4px;">
-        🤖 {len(dynamic_themes)} themes built from {len(movers)} real price movers · Claude Haiku · {today_str} · Refreshes daily
-      </div>
+      <div style="font-size:11px;font-weight:700;color:#1d4ed8;">{source_label}</div>
     </div>""", unsafe_allow_html=True)
 else:
-    # No AI key or Claude failed — show top/bottom movers directly
+    # Use seed themes — scored from LIVE prices so values are always current
+    source_label = f"📊 {len(SEED_THEMES)} themes · Scored from live prices · Add Anthropic key for AI-generated themes"
     if not ant_key:
-        st.info("Add ANTHROPIC_API_KEY to Streamlit secrets for fully dynamic AI-driven themes. Showing raw momentum ranking.")
-    if movers:
-        hot_syms    = [m["sym"] for m in movers if m["chg1m"] > 0][:12]
-        fading_syms = [m["sym"] for m in reversed(movers) if m["chg1m"] < 0][:12]
-        if hot_syms:
-            universe_merged["hot"] = [{"name":"Top Momentum Stocks","tickers":hot_syms,
-                "subsectors":[],"desc":"Stocks with strongest composite momentum this month.",
-                "option_setup":"LONG CALL — momentum is positive, look for breakout entries"}]
-        if fading_syms:
-            universe_merged["fading"] = [{"name":"Weakest Momentum Stocks","tickers":fading_syms,
-                "subsectors":[],"desc":"Stocks with weakest composite momentum this month.",
-                "option_setup":"LONG PUT or PUT SPREAD — momentum negative, watch for further breakdown"}]
+        st.markdown(f"""
+        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:12px;">
+          📊 <b>Showing {len(SEED_THEMES)} seed themes scored from live prices.</b>
+          Add <code>ANTHROPIC_API_KEY</code> to Streamlit secrets to enable fully dynamic AI-generated themes from real movers.
+        </div>""", unsafe_allow_html=True)
+    for t in SEED_THEMES:
+        cat = t.get("category","emerging")
+        t2 = copy.deepcopy(t)
+        extras = st.session_state.custom_tickers.get(t2["name"],[])
+        t2["tickers"] = list(dict.fromkeys(t2["tickers"] + extras))
+        universe_merged[cat].append(t2)
 
 # Add any manually added themes
 for cat_key in ["new_hot","new_fading","new_emerging"]:
@@ -1377,6 +1392,14 @@ for tab, key in zip(tabs_th, tab_keys):
                 cl, cr = st.columns([2, 1])
                 with cl:
                     st.markdown(f'<div style="font-size:12px;color:#6b7280;margin-bottom:8px;">{t["desc"]}</div>', unsafe_allow_html=True)
+
+                    # Options play
+                    opt = t.get("option_setup","")
+                    if opt:
+                        opt_col = "#15803d" if any(x in opt.upper() for x in ["LONG CALL","CSP","BULL"]) else "#b91c1c" if any(x in opt.upper() for x in ["LONG PUT","BEAR","SHORT"]) else "#1d4ed8"
+                        opt_bg  = "#f0fdf4" if "#15803d"==opt_col else "#fef2f2" if "#b91c1c"==opt_col else "#eff6ff"
+                        opt_bc  = "#bbf7d0" if "#15803d"==opt_col else "#fecaca" if "#b91c1c"==opt_col else "#bfdbfe"
+                        st.markdown(f'<div style="background:{opt_bg};border:1px solid {opt_bc};border-radius:5px;padding:6px 10px;margin-bottom:8px;font-size:11px;"><span style="font-weight:700;color:{opt_col};">💡 Options play:</span> <span style="color:#374151;">{opt}</span></div>', unsafe_allow_html=True)
 
                     # Sub-sectors
                     if t.get("subsectors"):

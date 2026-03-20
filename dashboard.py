@@ -715,11 +715,6 @@ def get_sector_etf_flow() -> dict:
     Detect institutional sector rotation from ETF price/volume data.
     Large volume + price move = institutional flow into/out of sector.
     """
-    sector_etfs = {
-        "Tech":XLK, "Energy":"XLE", "Financials":"XLF", "Healthcare":"XLV",
-        "Industrials":"XLI", "Comm":"XLC", "Disc":"XLY", "Staples":"XLP",
-        "Utilities":"XLU", "Materials":"XLB", "R.Estate":"XLRE",
-    }
     out = {}
     for name, sym in [("Tech","XLK"),("Energy","XLE"),("Financials","XLF"),
                        ("Healthcare","XLV"),("Industrials","XLI"),("Comm","XLC"),

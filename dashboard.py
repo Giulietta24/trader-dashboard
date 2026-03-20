@@ -532,6 +532,291 @@ def get_earnings_calendar(key):
         return out[:6]
     except: return []
 
+# ── NEW: IV RANK ───────────────────────────────────────────────────────────────
+@st.cache_data(ttl=3600)
+def get_iv_rank(sym: str) -> dict:
+    """
+    Calculate IV Rank and IV Percentile from real options chain data.
+    Uses ATM options implied volatility vs 52-week range of historical vol.
+    """
+    try:
+        tk = yf.Ticker(sym)
+        # Get 1 year of price history for HV calculation
+        h = tk.history(period="1y")
+        if h.empty or len(h) < 30: return {}
+
+        # Calculate 30-day historical volatility (annualised)
+        log_ret = np.log(h["Close"] / h["Close"].shift(1)).dropna()
+        hv_30   = float(log_ret.tail(30).std() * np.sqrt(252) * 100)
+        hv_10   = float(log_ret.tail(10).std() * np.sqrt(252) * 100)
+
+        # Rolling 252-day HV to get 52-week high/low of HV
+        rolling_hv = log_ret.rolling(30).std() * np.sqrt(252) * 100
+        hv_52w_high = float(rolling_hv.max())
+        hv_52w_low  = float(rolling_hv.min())
+
+        # Get current IV from nearest expiry ATM options
+        current_iv = None
+        try:
+            exps = tk.options
+            if exps:
+                # Use first expiry ~2-6 weeks out
+                exp = next((e for e in exps if 14 <= (datetime.strptime(e,"%Y-%m-%d") - datetime.now()).days <= 45), exps[0])
+                chain = tk.option_chain(exp)
+                price = float(h["Close"].iloc[-1])
+                # Find ATM call
+                calls = chain.calls
+                calls["dist"] = abs(calls["strike"] - price)
+                atm = calls.nsmallest(1, "dist")
+                if not atm.empty:
+                    current_iv = float(atm["impliedVolatility"].iloc[0]) * 100
+        except: pass
+
+        # Use HV as proxy if no IV available
+        iv = current_iv if current_iv and current_iv > 0 else hv_30
+
+        # IV Rank: where is current IV in 52-week range
+        if hv_52w_high > hv_52w_low:
+            ivr = int((iv - hv_52w_low) / (hv_52w_high - hv_52w_low) * 100)
+        else:
+            ivr = 50
+
+        ivr = max(0, min(100, ivr))
+
+        # IV vs HV ratio: is IV rich or cheap vs actual moves
+        iv_vs_hv = round(iv / hv_30, 2) if hv_30 > 0 else 1.0
+
+        # Classification
+        if ivr >= 80:
+            verdict = "SELL PREMIUM"; vc = "#15803d"; vbg = "#f0fdf4"
+            reason  = "IV very expensive — sell options (CSP/CC)"
+        elif ivr >= 50:
+            verdict = "SELL PREMIUM"; vc = "#16a34a"; vbg = "#f0fdf4"
+            reason  = "IV elevated — lean towards selling"
+        elif ivr >= 30:
+            verdict = "NEUTRAL"; vc = "#d97706"; vbg = "#fffbeb"
+            reason  = "IV average — either direction workable"
+        else:
+            verdict = "BUY PREMIUM"; vc = "#1d4ed8"; vbg = "#eff6ff"
+            reason  = "IV cheap — buy options (LONG CALL/PUT)"
+
+        # Earnings within 21 days?
+        near_earnings = False
+        try:
+            cal = tk.calendar
+            if cal is not None and hasattr(cal, 'T'):
+                eq = cal.T.get("Earnings Date")
+                if eq is not None:
+                    eq_date = pd.to_datetime(eq).iloc[0] if hasattr(eq, 'iloc') else pd.to_datetime(eq)
+                    days_to_earn = (eq_date - pd.Timestamp.now()).days
+                    near_earnings = 0 <= days_to_earn <= 21
+        except: pass
+
+        return {
+            "sym": sym, "iv": round(iv, 1), "hv30": round(hv_30, 1),
+            "ivr": ivr, "iv_vs_hv": iv_vs_hv,
+            "hv_52w_high": round(hv_52w_high, 1),
+            "hv_52w_low":  round(hv_52w_low, 1),
+            "verdict": verdict, "vc": vc, "vbg": vbg, "reason": reason,
+            "near_earnings": near_earnings,
+        }
+    except: return {}
+
+@st.cache_data(ttl=3600)
+def get_unusual_options_flow(sym: str) -> dict:
+    """
+    Detect unusual options activity from yfinance options chain.
+    Unusual = volume > 3x open interest, or total volume > 10x average.
+    """
+    try:
+        tk   = yf.Ticker(sym)
+        exps = tk.options
+        if not exps: return {}
+
+        unusual_calls, unusual_puts = [], []
+        total_call_vol = total_put_vol = 0
+
+        for exp in exps[:3]:  # Check next 3 expiries
+            try:
+                chain = tk.option_chain(exp)
+                price = float(tk.history(period="2d")["Close"].iloc[-1])
+
+                for _, row in chain.calls.iterrows():
+                    vol = int(row.get("volume", 0) or 0)
+                    oi  = int(row.get("openInterest", 0) or 0)
+                    total_call_vol += vol
+                    if vol > 500 and oi > 0 and vol / max(oi, 1) > 2:
+                        unusual_calls.append({
+                            "strike": float(row["strike"]),
+                            "exp": exp, "vol": vol, "oi": oi,
+                            "iv": round(float(row.get("impliedVolatility",0))*100,1),
+                            "type": "CALL",
+                            "otm": round((float(row["strike"])-price)/price*100,1)
+                        })
+
+                for _, row in chain.puts.iterrows():
+                    vol = int(row.get("volume", 0) or 0)
+                    oi  = int(row.get("openInterest", 0) or 0)
+                    total_put_vol += vol
+                    if vol > 500 and oi > 0 and vol / max(oi, 1) > 2:
+                        unusual_puts.append({
+                            "strike": float(row["strike"]),
+                            "exp": exp, "vol": vol, "oi": oi,
+                            "iv": round(float(row.get("impliedVolatility",0))*100,1),
+                            "type": "PUT",
+                            "otm": round((price-float(row["strike"]))/price*100,1)
+                        })
+            except: pass
+
+        unusual_calls.sort(key=lambda x: -x["vol"])
+        unusual_puts.sort(key=lambda x: -x["vol"])
+        pcr = round(total_put_vol / max(total_call_vol, 1), 2)
+
+        return {
+            "sym": sym,
+            "unusual_calls": unusual_calls[:3],
+            "unusual_puts":  unusual_puts[:3],
+            "pcr": pcr,
+            "pcr_signal": "BEARISH" if pcr > 1.2 else "BULLISH" if pcr < 0.7 else "NEUTRAL",
+            "total_call_vol": total_call_vol,
+            "total_put_vol":  total_put_vol,
+        }
+    except: return {}
+
+@st.cache_data(ttl=3600)
+def get_sec_form4(sym: str) -> list:
+    """Fetch recent insider Form 4 filings from SEC EDGAR (free, official)."""
+    try:
+        # Get CIK for the ticker
+        r = requests.get(
+            f"https://efts.sec.gov/LATEST/search-index?q=%22{sym}%22&dateRange=custom"
+            f"&startdt={(datetime.now()-pd.Timedelta(days=90)).strftime('%Y-%m-%d')}"
+            f"&enddt={datetime.now().strftime('%Y-%m-%d')}&forms=4",
+            timeout=8,
+            headers={"User-Agent": "TradingDashboard contact@example.com"}
+        )
+        hits = r.json().get("hits", {}).get("hits", [])
+        out  = []
+        for h in hits[:5]:
+            src  = h.get("_source", {})
+            name = src.get("display_names", ["Unknown"])[0] if src.get("display_names") else "Insider"
+            filed = src.get("file_date", "")
+            out.append({
+                "name":   name,
+                "filed":  filed,
+                "url":    f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company={sym}&type=4",
+            })
+        return out
+    except: return []
+
+@st.cache_data(ttl=3600)
+def get_sector_etf_flow() -> dict:
+    """
+    Detect institutional sector rotation from ETF price/volume data.
+    Large volume + price move = institutional flow into/out of sector.
+    """
+    sector_etfs = {
+        "Tech":XLK, "Energy":"XLE", "Financials":"XLF", "Healthcare":"XLV",
+        "Industrials":"XLI", "Comm":"XLC", "Disc":"XLY", "Staples":"XLP",
+        "Utilities":"XLU", "Materials":"XLB", "R.Estate":"XLRE",
+    }
+    out = {}
+    for name, sym in [("Tech","XLK"),("Energy","XLE"),("Financials","XLF"),
+                       ("Healthcare","XLV"),("Industrials","XLI"),("Comm","XLC"),
+                       ("Disc","XLY"),("Staples","XLP"),("Utilities","XLU"),
+                       ("Materials","XLB"),("R.Estate","XLRE")]:
+        try:
+            h = yf.Ticker(sym).history(period="1mo")
+            if not h.empty and len(h) >= 5:
+                p    = h["Close"].iloc[-1]
+                p1d  = h["Close"].iloc[-2]
+                p1w  = h["Close"].iloc[-6] if len(h)>=6 else h["Close"].iloc[0]
+                vol  = h["Volume"].iloc[-1]
+                avg_vol = h["Volume"].tail(20).mean()
+                vol_ratio = round(vol / max(avg_vol, 1), 2)
+                chg1d = round((p-p1d)/p1d*100, 2)
+                chg1w = round((p-p1w)/p1w*100, 2)
+                # Flow signal: big volume + directional move = institutional
+                if vol_ratio > 1.5 and abs(chg1d) > 0.5:
+                    flow = "INFLOW" if chg1d > 0 else "OUTFLOW"
+                else:
+                    flow = "NEUTRAL"
+                out[name] = {
+                    "sym": sym, "chg1d": chg1d, "chg1w": chg1w,
+                    "vol_ratio": vol_ratio, "flow": flow
+                }
+        except: pass
+    return out
+
+@st.cache_data(ttl=86400)
+def get_claude_trade_plans(signals_json: str, account_size: float,
+                            vix: float, spy_1m: float,
+                            date_str: str) -> dict:
+    """
+    Claude reads ALL signals and produces very specific trade plans:
+    stock + strategy + strike + expiry + size + entry + stop + target.
+    """
+    key = _anthropic_key()
+    if not key: return {}
+    try:
+        prompt = f"""You are a professional options trader managing a ${account_size:,.0f} account.
+Today is {date_str}. VIX={vix:.1f}, SPY 1M={spy_1m:+.1f}%.
+
+Here is today's complete signal data across all indicators:
+{signals_json}
+
+Produce 5-8 specific actionable trade ideas. For each:
+- Only suggest trades where MULTIPLE signals align (price + IV + smart money)
+- Be specific about strikes (use round numbers near current price)
+- Position size: max 5% of account per trade, smaller for speculative
+- Prioritise capital preservation — if signals conflict, say AVOID
+
+Return ONLY valid JSON (no markdown):
+{{
+  "market_context": "2 sentences on overall market conditions and what that means for options today",
+  "trades": [
+    {{
+      "rank": 1,
+      "sym": "NVDA",
+      "strategy": "LONG CALL",
+      "why": "Price momentum strong + IV rank low (cheap options) + unusual call flow detected + sector leading",
+      "signals_aligned": ["Price +8% 1M", "IVR 22 (cheap)", "Unusual 450C volume 3x OI", "XLK inflow"],
+      "strike": 450,
+      "expiry": "45 days (monthly expiry)",
+      "contracts": 2,
+      "cost": "$840 estimated (2 x $420)",
+      "pct_account": "2.1%",
+      "entry": "Buy on any pullback to $442-445, ideally near 21 EMA",
+      "stop": "Close position if NVDA closes below $435 (2 ATR stop)",
+      "target1": "$465 (take 50% off)",
+      "target2": "$480 (run remainder with trailing stop)",
+      "risk_reward": "3.2:1",
+      "avoid_if": "VIX spikes above 25 before entry — IV crush risk"
+    }}
+  ],
+  "avoid_today": ["List stocks/sectors to avoid and why"],
+  "key_risk": "The single biggest risk to all these trades today"
+}}
+
+Account size: ${account_size:,.0f}
+Risk per trade: max 5% = ${account_size*0.05:,.0f}"""
+
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": "claude-sonnet-4-20250514", "max_tokens": 3000,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=45
+        )
+        text = r.json().get("content", [{}])[0].get("text", "").strip()
+        if text.startswith("```"):
+            text = "\n".join(text.split("\n")[1:])
+            if text.endswith("```"): text = text[:-3]
+        return json.loads(text.strip())
+    except Exception as e:
+        return {}
+
 @st.cache_data(ttl=1800)
 def get_ai_options_analysis(spy_chg,qqq_chg,vix,spy_1m,qqq_1m,iwm_1m,sector_summary):
     key=_anthropic_key()
@@ -1158,332 +1443,271 @@ with inf_c3:
     </div>""", unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 9 — MARKET THEMES (3-layer system)
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🎯 Market Themes & Momentum</div>', unsafe_allow_html=True)
+# ════════════════════════════════════════════════════════════════════════════════
+# SECTION 9 — OPTIONS THEME SCANNER (Fully Dynamic — Claude + Yahoo Finance)
+# ════════════════════════════════════════════════════════════════════════════════
+st.markdown('<div class="sec">🎯 Options Theme Scanner — What to Trade Today</div>', unsafe_allow_html=True)
 
-# ── DYNAMIC THEME GENERATION ─────────────────────────────────────────────────
+# ── STEP 1: Scan 150 liquid stocks for real momentum (Yahoo Finance, free) ────
+# This is the ONLY thing hardcoded — the universe of stocks to scan.
+# Claude decides ALL groupings, names, and trade classifications from the data.
+SCAN_UNIVERSE = [
+    # Mega cap tech
+    "NVDA","MSFT","AAPL","GOOGL","META","AMZN","TSLA","AVGO","ORCL","CRM",
+    # Semiconductors
+    "AMD","SMCI","ARM","ANET","MRVL","QCOM","MU","INTC","TSM","ASML","LRCX","KLAC",
+    # AI / Cloud software
+    "NOW","SNOW","PLTR","AI","PATH","DDOG","NET","ZS","CRWD","PANW",
+    # Defense
+    "LMT","RTX","NOC","GD","BA","KTOS","HII","LDOS","CACI","AXON","RKLB",
+    # Energy
+    "XOM","CVX","COP","OXY","LNG","CEG","VST","CCJ","ETN","GEV","NEE","NRG",
+    # Financials
+    "JPM","GS","BAC","V","MA","AXP","COF","SCHW","BX","MS","C","BRK-B",
+    # Healthcare / Biotech
+    "LLY","NVO","UNH","VRTX","REGN","AMGN","ISRG","MRNA","DXCM","ABBV","PFE","BMY",
+    # Industrials
+    "GE","CAT","DE","HON","EMR","ROK","PWR","FLR","MTZ","WM","ETN","MMM",
+    # Consumer
+    "HD","COST","TGT","MCD","SBUX","NKE","LULU","ROST","TJX","AMZN","LOW","DG",
+    # Small/mid growth
+    "IONQ","RGTI","HIMS","SOUN","BBAI","CELH","MP","UUUU","RKLB","HOOD","COIN","MSTR",
+    # China / EM
+    "BABA","JD","PDD","NIO","BIDU","LI","XPEV","MELI","NU","SE",
+    # Commodities
+    "FCX","NEM","ALB","LAC","VALE","AA","CLF","STLD","BHP","RIO","GOLD","AEM",
+    # REITs / Rates sensitive
+    "AMT","PLD","EQIX","O","SPG","VNQ","IYR","MPW","VICI","CCI",
+    # Short squeeze / high SI
+    "GME","AMC","BYND","SOFI","OPEN","SPCE","PTON","BBBY","CLOV","WISH",
+]
+
+@st.cache_data(ttl=3600)
+def get_raw_movers(universe: tuple) -> list:
+    """Fetch live momentum for every stock in the universe. No grouping — raw data."""
+    out = []
+    for sym in universe:
+        try:
+            h = yf.Ticker(sym).history(period="3mo")
+            if not h.empty and len(h) >= 22:
+                p   = h["Close"].iloc[-1]
+                p1d = h["Close"].iloc[-2]
+                p1w = h["Close"].iloc[-6]  if len(h) >= 6  else p
+                p1m = h["Close"].iloc[-22]
+                p3m = h["Close"].iloc[0]
+                chg1d = round((p - p1d) / p1d * 100, 2)
+                chg1w = round((p - p1w) / p1w * 100, 2)
+                chg1m = round((p - p1m) / p1m * 100, 2)
+                chg3m = round((p - p3m) / p3m * 100, 2)
+                comp  = round(chg1d*0.15 + chg1w*0.25 + chg1m*0.45 + chg3m*0.15, 2)
+                out.append({"sym": sym, "price": round(p,2),
+                            "chg1d": chg1d, "chg1w": chg1w,
+                            "chg1m": chg1m, "chg3m": chg3m,
+                            "comp": comp})
+        except: pass
+    out.sort(key=lambda x: -x["comp"])
+    return out
+
+@st.cache_data(ttl=86400)
+def build_options_themes(movers_text: str, sector_perf: str,
+                          vix: float, spy_1m: float, date_str: str) -> dict:
+    """
+    Claude receives raw momentum data for 150 stocks.
+    It does EVERYTHING: grouping, naming, Long Call/CSP/Long Put classification.
+    No hardcoded themes. No hardcoded sector names. Purely data-driven.
+    """
+    key = _anthropic_key()
+    if not key:
+        return {}
+    try:
+        prompt = f"""You are a professional options trader analysing today's market on {date_str}.
+
+MARKET CONTEXT:
+VIX: {vix:.1f} | SPY 1-month: {spy_1m:+.1f}%
+Sector performance: {sector_perf}
+
+RAW STOCK MOMENTUM DATA (1D / 1W / 1M / 3M % change):
+{movers_text}
+
+YOUR JOB:
+Look at which stocks are moving together and WHY. Group them into 8-12 actionable options themes.
+
+For EACH theme:
+1. Give it a specific descriptive name that explains WHY these stocks are moving (e.g. "Iran War Oil Premium", "NVDA AI Earnings Momentum", "Rate Fear Crushing REITs") — NOT generic sector names
+2. Pick 4-8 stocks from the data that fit this theme
+3. Classify the trade: LONG CALL, CSP, or LONG PUT based on the actual momentum
+4. Write one sentence explaining the entry strategy
+5. Name the key risk to watch
+
+TRADE CLASSIFICATION RULES:
+- LONG CALL: stocks in clear uptrend, avg 1M > +5%, buy calls on pullbacks
+- CSP (Cash Secured Put): stocks flat to mild up, avg 1M -3% to +5%, high IV, sell puts below support
+- LONG PUT: stocks in clear downtrend, avg 1M < -5%, buy puts on bounces
+- CALL SPREAD: moderate uptrend +2 to +5%, reduce cost vs naked call
+- PUT SPREAD: moderate downtrend -2 to -5%, reduce risk vs naked put
+
+Return ONLY valid JSON array (no markdown, no backticks):
+[
+  {{
+    "name": "Specific theme name explaining WHY",
+    "trade": "LONG CALL",
+    "tickers": ["SYM1","SYM2","SYM3","SYM4"],
+    "avg_1m": 8.3,
+    "entry": "Buy calls on any pullback to the 21 EMA, target prior highs",
+    "risk": "Fed hawkish surprise would reverse the move",
+    "why": "One sentence: the specific catalyst or narrative driving this group"
+  }}
+]"""
+
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 2500,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=30
+        )
+        text = r.json().get("content", [{}])[0].get("text", "").strip()
+        if text.startswith("```"):
+            text = "\n".join(text.split("\n")[1:])
+            if text.endswith("```"): text = text[:-3]
+        themes = json.loads(text.strip())
+        # Validate
+        valid = [t for t in themes if all(k in t for k in ["name","trade","tickers","why"])]
+        return {"themes": valid}
+    except Exception as e:
+        return {}
+
+# ── RUN ───────────────────────────────────────────────────────────────────────
+with st.spinner(f"Scanning {len(SCAN_UNIVERSE)} stocks for options opportunities..."):
+    raw_movers = get_raw_movers(tuple(SCAN_UNIVERSE))
+
 sector_perf_str = ", ".join([f"{k}:{v.get('1d',0):+.1f}%" for k,v in list((sectors or {}).items())[:8]])
 
-# Get manual themes added by user
-manual_themes = []
-for cat_key in ["new_hot","new_fading","new_emerging"]:
-    manual_themes.extend(st.session_state.approved_recs.get(cat_key,[]))
+if ant_key:
+    # Build concise text summary of top 60 movers for Claude
+    top_up   = raw_movers[:30]
+    top_down = sorted(raw_movers, key=lambda x: x["comp"])[:15]
+    mid      = [m for m in raw_movers if -3 < m["comp"] < 3][:15]
+    movers_text = "STRONG UPTREND:\n"
+    movers_text += "\n".join([f"  {m['sym']}: 1D={m['chg1d']:+.1f}% 1W={m['chg1w']:+.1f}% 1M={m['chg1m']:+.1f}% 3M={m['chg3m']:+.1f}%" for m in top_up])
+    movers_text += "\n\nSTRONG DOWNTREND:\n"
+    movers_text += "\n".join([f"  {m['sym']}: 1D={m['chg1d']:+.1f}% 1W={m['chg1w']:+.1f}% 1M={m['chg1m']:+.1f}% 3M={m['chg3m']:+.1f}%" for m in top_down])
+    movers_text += "\n\nSIDEWAYS / RANGE (CSP candidates):\n"
+    movers_text += "\n".join([f"  {m['sym']}: 1D={m['chg1d']:+.1f}% 1W={m['chg1w']:+.1f}% 1M={m['chg1m']:+.1f}% 3M={m['chg3m']:+.1f}%" for m in mid])
 
-# Broad watchlist — Claude will cluster these into themes
-MOVER_WATCHLIST = [
-    "NVDA","MSFT","AAPL","GOOGL","META","AMZN","TSLA","AVGO","ORCL","CRM",
-    "JPM","GS","BAC","V","MA","AXP","COF","SCHW","BX","BRK-B",
-    "XOM","CVX","COP","OXY","LNG","CEG","VST","CCJ","ETN","GEV",
-    "LMT","RTX","NOC","GD","BA","PLTR","KTOS","HII","LDOS","CACI",
-    "LLY","NVO","UNH","JNJ","VRTX","REGN","AMGN","ISRG","MRNA","DXCM",
-    "GE","CAT","DE","HON","EMR","ROK","PWR","FLR","MTZ","WM",
-    "HD","WMT","COST","TGT","MCD","SBUX","NKE","LULU","ROST","TJX",
-    "AMD","SMCI","ARM","ANET","MRVL","DELL","MU","QCOM","INTC","HPE",
-    "IONQ","RGTI","HIMS","SOUN","BBAI","MP","UUUU","CELH","AXON","RKLB",
-    "TSM","ASML","NVO","PDD","MELI","NU","SE","BABA","JD","BIDU",
-    "AMT","PLD","EQIX","NEE","DUK","SO","AEP","PCG","SRE","D",
-    "FCX","NEM","ALB","LAC","VALE","RIO","BHP","AA","CLF","STLD",
-]
-
-with st.spinner("Scanning 120 stocks for market movers..."):
-    movers = get_top_movers(MOVER_WATCHLIST)
-
-if ant_key and movers:
-    movers_summary = "\n".join([
-        f"{m['sym']}: 1W={m['chg1w']:+.1f}% 1M={m['chg1m']:+.1f}% 3M={m['chg3m']:+.1f}%"
-        for m in movers[:50]
-    ])
-    with st.spinner("Claude building today's themes from real market data..."):
-        dynamic_themes = get_dynamic_themes(
-            movers_summary, sector_perf_str,
-            vix_price, spy_d.get("chg1m",0), today_str
+    with st.spinner("Claude grouping stocks into options themes..."):
+        result = build_options_themes(
+            movers_text, sector_perf_str,
+            vix_price, spy_d.get("chg1m", 0), today_str
         )
+    ai_themes = result.get("themes", [])
 else:
-    dynamic_themes = []
+    ai_themes = []
 
-# ── SEED THEMES — always shown when Claude hasn't run yet ─────────────────────
-# These are scored from LIVE prices so values are always real even if names are fixed
-SEED_THEMES = [
-    {"name":"AI & Semiconductors",     "category":"hot",      "subsectors":["Chips","Data Centres","Networking","AI Software"],  "tickers":["NVDA","AMD","AVGO","ARM","SMCI","ANET","MRVL","DELL","ORCL","CRM"],  "desc":"AI infrastructure buildout — chips, servers, power and software.", "option_setup":"LONG CALL on dips — strongest multi-year capex cycle"},
-    {"name":"Defense & Aerospace",     "category":"hot",      "subsectors":["Weapons","Cyber","Space","NATO"],                    "tickers":["LMT","RTX","NOC","GD","BA","PLTR","KTOS","HII","LDOS","CACI"],       "desc":"Global rearmament cycle accelerating. NATO spend rising.", "option_setup":"LONG CALL or CSP — strong tailwinds, elevated premiums"},
-    {"name":"Energy & Power Grid",     "category":"hot",      "subsectors":["Nuclear","LNG","Grid","Utilities"],                  "tickers":["CEG","VST","CCJ","ETN","LNG","OKE","NEE","GEV","NRG","EXC"],         "desc":"AI power demand + energy security driving nuclear and grid investment.", "option_setup":"CSP on pullbacks — strong dividend support, high premiums"},
-    {"name":"Financials & Banks",      "category":"hot",      "subsectors":["Investment Banks","Credit","Insurance","Fintech"],   "tickers":["JPM","GS","BAC","V","MA","AXP","COF","SCHW","BX","MS"],             "desc":"High rates benefiting bank margins. Dealmaking and credit cycle.", "option_setup":"CSP — strong earnings, high IV around results"},
-    {"name":"Industrials & Reshoring", "category":"emerging", "subsectors":["Automation","Construction","Machinery","Supply Chain"],"tickers":["GE","CAT","DE","HON","EMR","ROK","PWR","FLR","MTZ","WM"],           "desc":"US manufacturing capex supercycle. Reshoring driving orders.", "option_setup":"LONG CALL SPREAD — steady grind higher, reduce cost with spread"},
-    {"name":"Biotech & GLP-1",         "category":"emerging", "subsectors":["Obesity Drugs","Oncology","Gene Therapy","Devices"], "tickers":["LLY","NVO","VRTX","REGN","AMGN","ISRG","DXCM","MRNA","EDIT","CRSP"], "desc":"GLP-1 obesity revolution. Gene editing and oncology breakthroughs.", "option_setup":"LONG CALL before catalysts — high IV, binary events"},
-    {"name":"Consumer Discretionary",  "category":"emerging", "subsectors":["Retail","Restaurants","Autos","E-commerce"],         "tickers":["AMZN","HD","COST","TGT","MCD","SBUX","NKE","LULU","ROST","TJX"],    "desc":"Consumer spending resilience. Premium brands and value retail.", "option_setup":"CSP — high quality names, collect premium on dips"},
-    {"name":"ESG & Clean Energy",      "category":"fading",   "subsectors":["Solar","Wind","EV Charging","Carbon"],               "tickers":["ENPH","SEDG","RUN","PLUG","FCEL","BLNK","CHPT","NOVA","ARRY","BE"],  "desc":"Policy headwinds and high rates hurting project financing.", "option_setup":"LONG PUT SPREAD — downtrend intact, limit risk with spread"},
-    {"name":"China & Emerging Markets","category":"fading",   "subsectors":["E-commerce","EV","Internet","Consumer"],             "tickers":["BABA","JD","PDD","NIO","BIDU","LI","XPEV","BILI","MELI","SE"],       "desc":"Geopolitical risk and weak consumer confidence weighing on returns.", "option_setup":"LONG PUT — elevated risk, watch macro triggers"},
-    {"name":"Quantum Computing",       "category":"emerging", "subsectors":["Hardware","Software","Error Correction"],            "tickers":["IONQ","RGTI","QUBT","IBM","GOOGL","MSFT","QBTS","ARQQ","HON","NVDA"],"desc":"Early hardware race accelerating. Long-term transformative potential.", "option_setup":"Small LONG CALL — speculative, size small, high reward/risk"},
-    {"name":"Humanoid Robotics",       "category":"emerging", "subsectors":["Robot Hardware","AI Control","Automation"],          "tickers":["TSLA","NVDA","ABB","HON","PATH","FANUC","AXON","RKLB","AI","BRZE"],  "desc":"Labor shortage + AI = humanoid robot demand building.", "option_setup":"LONG CALL LEAP — 12-18 month horizon, early positioning"},
-    {"name":"Speculative / Meme",      "category":"fading",   "subsectors":["Unprofitable Growth","SPACs","High Short Interest"],  "tickers":["SOFI","OPEN","SPCE","PTON","GME","AMC","BYND","BBAI","SOUN","IONQ"], "desc":"Rate-sensitive cash-burning companies. Speculative flows volatile.", "option_setup":"LONG PUT or avoid — high risk, unpredictable"},
-]
+# ── DISPLAY ───────────────────────────────────────────────────────────────────
+# Legend
+st.markdown("""
+<div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+  <span style="background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;">📈 LONG CALL — strong uptrend, buy calls on dips to EMA</span>
+  <span style="background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;">💰 CSP — sideways/mild up, sell puts below support for premium</span>
+  <span style="background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;">📉 LONG PUT — downtrend, buy puts on bounces</span>
+  <span style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;padding:3px 10px;border-radius:4px;font-size:11px;font-weight:700;">🔀 SPREADS — moderate move, reduce cost/risk vs naked options</span>
+</div>""", unsafe_allow_html=True)
 
-# Build universe_merged from Claude themes (if available) or seed themes
-universe_merged = {"hot":[],"fading":[],"emerging":[]}
+if ai_themes:
+    # Separate into columns by trade type
+    long_calls = [t for t in ai_themes if t["trade"] in ("LONG CALL","CALL SPREAD")]
+    csps       = [t for t in ai_themes if t["trade"] == "CSP"]
+    long_puts  = [t for t in ai_themes if t["trade"] in ("LONG PUT","PUT SPREAD")]
 
-if dynamic_themes:
-    # Claude returned fresh dynamic themes — use those
-    source_label = f"🤖 {len(dynamic_themes)} themes built from {len(movers)} real price movers · Claude Haiku · {today_str}"
-    for t in dynamic_themes:
-        cat = t.get("category","emerging")
-        if cat not in universe_merged: cat = "emerging"
-        t2 = copy.deepcopy(t)
-        extras = st.session_state.custom_tickers.get(t2["name"],[])
-        t2["tickers"] = list(dict.fromkeys(t2.get("tickers",[]) + extras))
-        if not t2.get("subsectors"): t2["subsectors"] = []
-        universe_merged[cat].append(t2)
-    st.markdown(f"""
-    <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 16px;margin-bottom:10px;">
-      <div style="font-size:11px;font-weight:700;color:#1d4ed8;">{source_label}</div>
-    </div>""", unsafe_allow_html=True)
+    st.markdown(f'<div style="font-size:11px;color:#1d4ed8;font-weight:600;margin-bottom:10px;">🤖 {len(ai_themes)} themes generated by Claude from live momentum of {len(raw_movers)} stocks · {today_str} · Refreshes daily</div>', unsafe_allow_html=True)
+
+    col_lc, col_csp, col_lp = st.columns(3)
+
+    trade_styles = {
+        "LONG CALL":   ("#15803d","#f0fdf4","#bbf7d0"),
+        "CALL SPREAD": ("#15803d","#f0fdf4","#bbf7d0"),
+        "CSP":         ("#1d4ed8","#eff6ff","#bfdbfe"),
+        "LONG PUT":    ("#b91c1c","#fef2f2","#fecaca"),
+        "PUT SPREAD":  ("#b91c1c","#fef2f2","#fecaca"),
+    }
+
+    def render_card(t, col):
+        tc, tbg, tbc = trade_styles.get(t["trade"], ("#374151","#f9fafb","#e5e7eb"))
+        # Get live prices for tickers
+        ticker_data = {m["sym"]: m for m in raw_movers}
+        pills = ""
+        for sym in t.get("tickers", [])[:6]:
+            md = ticker_data.get(sym, {})
+            pct = md.get("chg1m", 0)
+            pc  = "#16a34a" if pct > 0 else "#dc2626"
+            pills += f'<span style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:3px;padding:2px 6px;font-size:10px;margin:1px;display:inline-block;"><b style="color:#374151;">{sym}</b> <span style="color:{pc};">{pct:+.1f}%</span></span>'
+
+        with col:
+            st.markdown(f"""
+            <div style="background:{tbg};border:1px solid {tbc};border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:5px;">
+                <div style="font-size:12px;font-weight:700;color:#111827;line-height:1.3;">{t['name']}</div>
+                <span style="background:{tc};color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:3px;margin-left:6px;white-space:nowrap;">{t['trade']}</span>
+              </div>
+              <div style="font-size:11px;color:#374151;margin-bottom:4px;font-style:italic;">{t.get('why','')}</div>
+              <div style="font-size:11px;color:{tc};margin-bottom:4px;">📌 {t.get('entry','')}</div>
+              <div style="font-size:11px;color:#9ca3af;">⚠️ Risk: {t.get('risk','')}</div>
+              <div style="margin-top:7px;line-height:2.2;">{pills}</div>
+            </div>""", unsafe_allow_html=True)
+
+    with col_lc:
+        st.markdown(f'<div style="text-align:center;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:6px;font-size:12px;font-weight:700;color:#15803d;margin-bottom:8px;">📈 LONG CALLS ({len(long_calls)})</div>', unsafe_allow_html=True)
+        for t in long_calls: render_card(t, col_lc)
+
+    with col_csp:
+        st.markdown(f'<div style="text-align:center;background:#eff6ff;border:1px solid #bfdbfe;border-radius:6px;padding:6px;font-size:12px;font-weight:700;color:#1d4ed8;margin-bottom:8px;">💰 CSPs ({len(csps)})</div>', unsafe_allow_html=True)
+        for t in csps: render_card(t, col_csp)
+
+    with col_lp:
+        st.markdown(f'<div style="text-align:center;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:6px;font-size:12px;font-weight:700;color:#b91c1c;margin-bottom:8px;">📉 LONG PUTS ({len(long_puts)})</div>', unsafe_allow_html=True)
+        for t in long_puts: render_card(t, col_lp)
+
 else:
-    # Use seed themes — scored from LIVE prices so values are always current
-    source_label = f"📊 {len(SEED_THEMES)} themes · Scored from live prices · Add Anthropic key for AI-generated themes"
-    if not ant_key:
-        st.markdown(f"""
-        <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:12px;">
-          📊 <b>Showing {len(SEED_THEMES)} seed themes scored from live prices.</b>
-          Add <code>ANTHROPIC_API_KEY</code> to Streamlit secrets to enable fully dynamic AI-generated themes from real movers.
-        </div>""", unsafe_allow_html=True)
-    for t in SEED_THEMES:
-        cat = t.get("category","emerging")
-        t2 = copy.deepcopy(t)
-        extras = st.session_state.custom_tickers.get(t2["name"],[])
-        t2["tickers"] = list(dict.fromkeys(t2["tickers"] + extras))
-        universe_merged[cat].append(t2)
+    # No Anthropic key — show raw movers sorted by direction
+    st.warning("Add **ANTHROPIC_API_KEY** to Streamlit secrets — Claude groups these stocks into options themes automatically. Without it, showing raw movers only.")
+    up   = [m for m in raw_movers if m["comp"] > 2][:15]
+    down = sorted(raw_movers, key=lambda x: x["comp"])
+    down = [m for m in down if m["comp"] < -2][:15]
+    flat = [m for m in raw_movers if -2 <= m["comp"] <= 2][:15]
 
-# Add any manually added themes
-for cat_key in ["new_hot","new_fading","new_emerging"]:
-    cat = cat_key.replace("new_","")
-    for mt in st.session_state.approved_recs.get(cat_key,[]):
-        if not any(t.get("name")==mt.get("name") for t in universe_merged.get(cat,[])):
-            universe_merged[cat].append(mt)
+    c1, c2, c3 = st.columns(3)
+    for col, items, label, col_c in [(c1,up,"📈 Uptrend","#15803d"),(c2,flat,"💰 Sideways","#1d4ed8"),(c3,down,"📉 Downtrend","#b91c1c")]:
+        with col:
+            st.markdown(f'<div style="font-size:12px;font-weight:700;color:{col_c};margin-bottom:8px;">{label}</div>', unsafe_allow_html=True)
+            for m in items:
+                st.markdown(f'<div style="font-size:11px;padding:3px 0;border-bottom:1px solid #f3f4f6;"><b>{m["sym"]}</b> <span style="color:{col_c};">{m["chg1m"]:+.1f}% 1M</span> <span style="color:#9ca3af;font-size:10px;">{m["chg1d"]:+.1f}% today</span></div>', unsafe_allow_html=True)
 
-# ── Score themes from live prices then auto-classify ─────────────────────────
-# Flatten all themes from universe_merged, score each from real prices
-all_themes_flat = []
-for cat_themes in universe_merged.values():
-    all_themes_flat.extend(cat_themes)
+# ── ADD CUSTOM STOCK TO SCAN ──────────────────────────────────────────────────
+with st.expander("⚙️ Add stocks to the scan universe"):
+    st.markdown('<div style="font-size:12px;color:#6b7280;margin-bottom:8px;">Add any US-listed ticker to include in tomorrow\'s Claude scan. They will appear in themes if their momentum is relevant.</div>', unsafe_allow_html=True)
+    cu1, cu2 = st.columns([3,1])
+    with cu1:
+        extra_tick = st.text_input("Ticker", placeholder="e.g. CCJ, HOOD, IONQ", key="extra_ticker_input", label_visibility="collapsed")
+    with cu2:
+        if st.button("Add to scan", key="add_extra_ticker"):
+            if extra_tick:
+                ticks = [t.strip().upper() for t in extra_tick.split(",") if t.strip()]
+                existing = st.session_state.approved_recs.get("extra_tickers", [])
+                for tk in ticks:
+                    if tk not in existing: existing.append(tk)
+                st.session_state.approved_recs["extra_tickers"] = existing
+                st.rerun()
+    extras = st.session_state.approved_recs.get("extra_tickers", [])
+    if extras:
+        st.markdown(f'<div style="font-size:11px;color:#7e22ce;">Added to scan: {", ".join(extras)}</div>', unsafe_allow_html=True)
+        if st.button("Clear all custom tickers", key="clear_extras"):
+            st.session_state.approved_recs["extra_tickers"] = []
+            st.rerun()
 
-with st.spinner("Scoring themes from live prices..."):
-    all_scored = score_theme_tickers(all_themes_flat)
 
-# Add user's manually added themes
-for cat_key in ["new_hot","new_fading","new_emerging"]:
-    for ut in st.session_state.approved_recs.get(cat_key,[]):
-        if not any(t["name"]==ut["name"] for t in all_scored):
-            scored_ut = score_theme_tickers([ut])
-            all_scored.extend(scored_ut)
-
-# Filter hidden
-hidden = st.session_state.get("hidden_themes",[])
-all_scored = [t for t in all_scored if t["name"] not in hidden]
-
-# Auto-classify purely by live score — themes move between tabs automatically
-auto_hot      = sorted([t for t in all_scored if t["score"] >= 65], key=lambda x: -x["score"])
-auto_fading   = sorted([t for t in all_scored if t["score"] < 45],  key=lambda x: -x["score"])
-auto_emerging = sorted([t for t in all_scored if 45 <= t["score"] < 65], key=lambda x: -x["score"])
-reclassified  = {"hot": auto_hot, "fading": auto_fading, "emerging": auto_emerging}
-
-# Show what moved to fading
-if auto_fading:
-    fading_names = [t["name"] for t in auto_fading]
-    st.markdown(f'<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 12px;margin-bottom:8px;font-size:11px;">⚠️ <b>Currently fading (score &lt;45):</b> <span style="color:#b45309;">{", ".join(fading_names[:6])}</span></div>', unsafe_allow_html=True)
-
-# ── Theme Management Panel ────────────────────────────────────────────────────
-with st.expander("⚙️ Manage Themes — Add / Remove / Hide", expanded=False):
-    st.markdown('<div style="font-size:12px;color:#6b7280;margin-bottom:12px;">Themes auto-classify by live score. Use this panel to add your own themes, hide built-in ones, or remove custom themes.</div>', unsafe_allow_html=True)
-
-    mgmt_c1, mgmt_c2 = st.columns(2)
-    with mgmt_c1:
-        st.markdown('<div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px;">➕ Add a new theme</div>', unsafe_allow_html=True)
-        new_theme_name = st.text_input("Theme name", placeholder="e.g. Uranium Energy, US Dollar Strength, Fintech", key="new_theme_name", max_chars=40)
-        new_theme_tickers = st.text_input("Tickers (comma separated)", placeholder="e.g. CCJ,UEC,DNN,URG,NXE,UUUU", key="new_theme_tickers")
-        new_theme_desc = st.text_input("Description (optional)", placeholder="e.g. Nuclear fuel cycle demand driven by AI power needs", key="new_theme_desc", max_chars=100)
-        if st.button("➕ Add Theme to Dashboard", key="add_new_theme", use_container_width=True, type="primary"):
-            if new_theme_name and new_theme_tickers:
-                ticks = [t.strip().upper() for t in new_theme_tickers.split(",") if t.strip()]
-                if ticks:
-                    new_t = {"name": new_theme_name, "subsectors": [],
-                             "tickers": ticks,
-                             "desc": new_theme_desc if new_theme_desc else f"Custom theme: {new_theme_name}"}
-                    existing = st.session_state.approved_recs.get("new_emerging", [])
-                    if not any(e["name"]==new_theme_name for e in existing):
-                        existing.append(new_t)
-                        st.session_state.approved_recs["new_emerging"] = existing
-                        st.success(f"✅ Added '{new_theme_name}' with {len(ticks)} tickers — auto-classifying by score now")
-                        st.rerun()
-                    else:
-                        st.warning(f"'{new_theme_name}' already exists")
-            else:
-                st.warning("Enter both a theme name and at least one ticker")
-
-    with mgmt_c2:
-        st.markdown('<div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:8px;">👁 Hide / Restore built-in themes</div>', unsafe_allow_html=True)
-        st.markdown('<div style="font-size:11px;color:#6b7280;margin-bottom:8px;">Hide themes you don\'t want to track without deleting them. They can be restored anytime.</div>', unsafe_allow_html=True)
-        all_builtin = [t["name"] for cat in universe_merged.values() for t in cat if not any(e.get("name")==t["name"] for cat_key in ["new_hot","new_fading","new_emerging"] for e in st.session_state.approved_recs.get(cat_key,[]))]
-        for tname in all_builtin:
-            is_hidden = tname in st.session_state.hidden_themes
-            col_a, col_b = st.columns([3, 1])
-            with col_a:
-                st.markdown(f'<div style="font-size:12px;color:{"#9ca3af" if is_hidden else "#374151"};padding:3px 0;">{"🚫 " if is_hidden else "✓ "}{tname}</div>', unsafe_allow_html=True)
-            with col_b:
-                if is_hidden:
-                    if st.button("Restore", key=f"mgmt_restore_{tname}"):
-                        st.session_state.hidden_themes.remove(tname)
-                        st.rerun()
-                else:
-                    if st.button("Hide", key=f"mgmt_hide_{tname}"):
-                        st.session_state.hidden_themes.append(tname)
-                        st.rerun()
-
-        # Show custom themes with delete
-        custom_themes = []
-        for cat_key in ["new_hot","new_fading","new_emerging"]:
-            custom_themes.extend(st.session_state.approved_recs.get(cat_key, []))
-        if custom_themes:
-            st.markdown('<div style="font-size:11px;font-weight:700;color:#7e22ce;margin:12px 0 6px;">Your custom themes</div>', unsafe_allow_html=True)
-            for ct in custom_themes:
-                col_a, col_b = st.columns([3, 1])
-                with col_a:
-                    st.markdown(f'<div style="font-size:12px;color:#7e22ce;padding:3px 0;">✦ {ct["name"]}</div>', unsafe_allow_html=True)
-                with col_b:
-                    if st.button("Delete", key=f"del_ct_{ct['name']}"):
-                        for cat_key in ["new_hot","new_fading","new_emerging"]:
-                            lst = st.session_state.approved_recs.get(cat_key, [])
-                            st.session_state.approved_recs[cat_key] = [e for e in lst if e.get("name") != ct["name"]]
-                        st.rerun()
-
-# Filter hidden themes from all lists
-for k in reclassified:
-    reclassified[k] = [t for t in reclassified[k]
-                       if t["name"] not in st.session_state.hidden_themes]
-
-# ── Theme tabs with auto-classified content ───────────────────────────────────
-tab_labels=[
-    f"🔥 Hot ({len(auto_hot)})",
-    f"📉 Fading ({len(auto_fading)})",
-    f"🌱 Emerging ({len(auto_emerging)})"
-]
-tab_keys=["hot","fading","emerging"]
-tabs_th=st.tabs(tab_labels)
-
-for tab, key in zip(tabs_th, tab_keys):
-    with tab:
-        theme_list = reclassified.get(key, [])
-        if not theme_list:
-            st.markdown('<div style="color:#9ca3af;font-size:12px;padding:12px 0;">No themes in this category based on current price momentum.</div>', unsafe_allow_html=True)
-            continue
-
-        for t in theme_list:
-            score=t["score"]; avg_m=t.get("avg_mom",0)
-            sc="#16a34a" if score>=65 else "#d97706" if score>=45 else "#dc2626"
-            flag=""
-
-            # Check if this is a custom/approved theme (can be removed)
-            is_custom = any(
-                e.get("name")==t["name"]
-                for cat_key in ["new_hot","new_fading","new_emerging"]
-                for e in st.session_state.approved_recs.get(cat_key,[])
-            )
-
-            with st.expander(f"**{t['name']}**{flag}  —  Score: {score}/100  ·  {avg_m:+.1f}%"):
-                cl, cr = st.columns([2, 1])
-                with cl:
-                    st.markdown(f'<div style="font-size:12px;color:#6b7280;margin-bottom:8px;">{t["desc"]}</div>', unsafe_allow_html=True)
-
-                    # Options play
-                    opt = t.get("option_setup","")
-                    if opt:
-                        opt_col = "#15803d" if any(x in opt.upper() for x in ["LONG CALL","CSP","BULL"]) else "#b91c1c" if any(x in opt.upper() for x in ["LONG PUT","BEAR","SHORT"]) else "#1d4ed8"
-                        opt_bg  = "#f0fdf4" if "#15803d"==opt_col else "#fef2f2" if "#b91c1c"==opt_col else "#eff6ff"
-                        opt_bc  = "#bbf7d0" if "#15803d"==opt_col else "#fecaca" if "#b91c1c"==opt_col else "#bfdbfe"
-                        st.markdown(f'<div style="background:{opt_bg};border:1px solid {opt_bc};border-radius:5px;padding:6px 10px;margin-bottom:8px;font-size:11px;"><span style="font-weight:700;color:{opt_col};">💡 Options play:</span> <span style="color:#374151;">{opt}</span></div>', unsafe_allow_html=True)
-
-                    # Sub-sectors
-                    if t.get("subsectors"):
-                        st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;">Sub-sectors</div>', unsafe_allow_html=True)
-                        pills=" ".join([f'<span style="background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;padding:2px 8px;border-radius:12px;font-size:10px;font-weight:600;">{s}</span>' for s in t["subsectors"]])
-                        st.markdown(pills, unsafe_allow_html=True)
-
-                    # Score bar
-                    st.markdown(f'''<div style="margin-top:8px;">
-                      <div style="display:flex;justify-content:space-between;font-size:10px;color:#9ca3af;margin-bottom:3px;">
-                        <span>Momentum Score</span><span style="font-weight:700;color:{sc};">{score}/100</span>
-                      </div>
-                      <div style="height:7px;background:#f3f4f6;border-radius:4px;overflow:hidden;">
-                        <div style="height:7px;width:{score}%;background:{sc};border-radius:4px;"></div>
-                      </div>
-                    </div>''', unsafe_allow_html=True)
-
-                    # Add ticker
-                    st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;text-transform:uppercase;margin:10px 0 4px;">Add ticker to basket</div>', unsafe_allow_html=True)
-                    add_c1, add_c2 = st.columns([3,1])
-                    with add_c1:
-                        ni = st.text_input(f"add_{t['name']}", key=f"ni_{t['name']}_{key}",
-                                           placeholder="e.g. SOUN", max_chars=8,
-                                           label_visibility="collapsed").upper().strip()
-                    with add_c2:
-                        if st.button("Add", key=f"ab_{t['name']}_{key}"):
-                            if ni:
-                                ex = st.session_state.custom_tickers.get(t["name"], [])
-                                if ni not in ex:
-                                    ex.append(ni)
-                                    st.session_state.custom_tickers[t["name"]] = ex
-                                    st.rerun()
-
-                    # Show custom tickers with remove buttons
-                    customs = st.session_state.custom_tickers.get(t["name"], [])
-                    if customs:
-                        st.markdown('<div style="font-size:10px;color:#7e22ce;font-weight:600;margin-top:5px;">Your additions:</div>', unsafe_allow_html=True)
-                        rem_cols = st.columns(len(customs))
-                        for rc, ctick in zip(rem_cols, customs):
-                            with rc:
-                                st.markdown(f'<div style="font-size:11px;font-weight:600;color:#7e22ce;text-align:center;">{ctick}</div>', unsafe_allow_html=True)
-                                if st.button("✕", key=f"rm_{t['name']}_{key}_{ctick}", help=f"Remove {ctick}"):
-                                    ex = st.session_state.custom_tickers.get(t["name"], [])
-                                    if ctick in ex: ex.remove(ctick)
-                                    st.session_state.custom_tickers[t["name"]] = ex
-                                    st.rerun()
-
-                    # Remove entire theme button (custom themes only)
-                    if is_custom:
-                        if st.button(f"🗑 Remove this theme", key=f"del_{t['name']}",
-                                     help="Remove this custom theme entirely"):
-                            for cat_key in ["new_hot","new_fading","new_emerging","new_hot_approved"]:
-                                lst = st.session_state.approved_recs.get(cat_key, [])
-                                st.session_state.approved_recs[cat_key] = [
-                                    e for e in lst if e.get("name") != t["name"]
-                                ]
-                            st.rerun()
-                    else:
-                        # Built-in themes can't be deleted but can be hidden
-                        if st.button(f"🙈 Hide theme", key=f"exp_hide_{t['name']}",
-                                     help="Hide from dashboard (restore in settings below)"):
-                            hidden = st.session_state.get("hidden_themes", [])
-                            if t["name"] not in hidden:
-                                hidden.append(t["name"])
-                                st.session_state.hidden_themes = hidden
-                                st.rerun()
-
-                with cr:
-                    st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;">Top stocks by momentum</div>', unsafe_allow_html=True)
-                    for td in t.get("ticker_data", [])[:6]:
-                        tc = clr(td["chg1m"])
-                        is_c = td["sym"] in st.session_state.custom_tickers.get(t["name"], [])
-                        cb = ' <span style="background:#faf5ff;color:#7e22ce;font-size:9px;padding:1px 4px;border-radius:2px;">custom</span>' if is_c else ""
-                        st.markdown(f"""
-                        <div style="display:flex;justify-content:space-between;align-items:center;
-                             padding:4px 0;border-bottom:1px solid #f3f4f6;font-size:11px;">
-                          <span style="font-weight:700;color:#374151;">{td["sym"]}{cb}</span>
-                          <span style="color:{tc};font-weight:600;">{td["chg1m"]:+.1f}%</span>
-                          <span style="color:{clr(td['chg1w'])};font-size:10px;">{td['chg1w']:+.1f}%</span>
-                        </div>""", unsafe_allow_html=True)
-
-st.caption(f"Themes auto-classified by live score: >=65=Hot · 45-64=Emerging · <45=Fading · Layer 2: Claude daily intel · {today_str}")
-
-# ════════════════════════════════════════════════════════════════════════════════
 # SECTION 10 — SENTIMENT & SMART MONEY
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">😱 Sentiment · Fear/Greed · Analyst Consensus · Insider Activity</div>', unsafe_allow_html=True)
@@ -1801,6 +2025,389 @@ if run or ticker_input:
             st.error(f"Could not fetch **{sym}**: {sig['error']}")
         else:
             st.info(f"No data found for {sym}. Try a major US-listed stock.")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# OPTIONS DECISION HUB — 6-Panel Trade Analysis
+# ════════════════════════════════════════════════════════════════════════════════
+st.markdown('<div class="sec">🎰 Options Decision Hub — Full Signal Stack</div>', unsafe_allow_html=True)
+st.markdown('<div style="font-size:12px;color:#6b7280;margin-bottom:12px;">All signals combined to help you decide: what to trade, which strategy, where to enter, how much to risk.</div>', unsafe_allow_html=True)
+
+# Account size setting
+with st.expander("⚙️ Account Settings", expanded=False):
+    acct_col1, acct_col2 = st.columns([2,4])
+    with acct_col1:
+        account_size = st.number_input(
+            "Your trading account size ($)",
+            min_value=1000, max_value=10000000,
+            value=st.session_state.get("account_size", 25000),
+            step=1000, format="%d"
+        )
+        st.session_state["account_size"] = account_size
+        st.caption(f"Max risk per trade: ${account_size*0.05:,.0f} (5%) · Conservative: ${account_size*0.02:,.0f} (2%)")
+    with acct_col2:
+        scan_tickers_input = st.text_input(
+            "Stocks to analyse (comma separated — leave blank for auto top movers)",
+            value=st.session_state.get("hub_tickers","NVDA,AAPL,META,MSFT,AMZN,TSLA,AMD,LLY,JPM,XOM"),
+            key="hub_ticker_input"
+        )
+        st.session_state["hub_tickers"] = scan_tickers_input
+
+hub_tickers = [t.strip().upper() for t in st.session_state.get("hub_tickers","NVDA,AAPL,META,MSFT,AMZN,TSLA,AMD,LLY,JPM,XOM").split(",") if t.strip()][:15]
+account_size = st.session_state.get("account_size", 25000)
+
+# ── PANEL 2: WHAT'S MOVING & WHY ─────────────────────────────────────────────
+st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 8px;">Panel 2 - Price Volume Momentum</div>', unsafe_allow_html=True)
+
+@st.cache_data(ttl=300)
+def get_whats_moving(tickers: tuple) -> list:
+    out = []
+    for sym in tickers:
+        try:
+            tk = yf.Ticker(sym)
+            h  = tk.history(period="3mo")
+            if h.empty or len(h) < 22: continue
+            p    = h["Close"].iloc[-1]
+            p1d  = h["Close"].iloc[-2]
+            p1w  = h["Close"].iloc[-6]  if len(h)>=6  else p
+            p1m  = h["Close"].iloc[-22]
+            vol  = h["Volume"].iloc[-1]
+            avg_vol = h["Volume"].tail(20).mean()
+            vol_r = round(vol/max(avg_vol,1), 1)
+            sma50 = h["Close"].tail(50).mean()
+            sma200= h["Close"].tail(200).mean() if len(h)>=200 else h["Close"].mean()
+            ath   = h["High"].max()
+            chg1d = round((p-p1d)/p1d*100, 2)
+            chg1w = round((p-p1w)/p1w*100, 2)
+            chg1m = round((p-p1m)/p1m*100, 2)
+            ath_pct = round((p-ath)/ath*100, 1)
+            dma50_pct = round((p-sma50)/sma50*100, 1)
+            out.append({
+                "sym": sym, "price": round(p,2),
+                "chg1d": chg1d, "chg1w": chg1w, "chg1m": chg1m,
+                "vol_ratio": vol_r,
+                "above50": p > sma50, "above200": p > sma200,
+                "ath_pct": ath_pct,
+                "dma50_pct": dma50_pct,
+                "vol_signal": "🔥 Unusual vol" if vol_r > 2 else "↑ High vol" if vol_r > 1.5 else "Normal",
+            })
+        except: pass
+    out.sort(key=lambda x: -abs(x["chg1m"]))
+    return out
+
+with st.spinner("Loading stock data..."):
+    moving_data = get_whats_moving(tuple(hub_tickers))
+
+if moving_data:
+    p2_cols = st.columns(len(moving_data))
+    for col, d in zip(p2_cols, moving_data):
+        dc = "#16a34a" if d["chg1d"] >= 0 else "#dc2626"
+        mc = "#16a34a" if d["chg1m"] >= 0 else "#dc2626"
+        ath_badge = f'<span style="background:#fef9c3;color:#854d0e;font-size:9px;padding:1px 4px;border-radius:2px;">ATH {d["ath_pct"]:.0f}%</span>' if d["ath_pct"] > -5 else ""
+        earn_warn = ""
+        with col:
+            st.markdown(f"""
+            <div class="card" style="padding:8px 10px;">
+              <div style="font-size:13px;font-weight:700;color:#111827;">{d["sym"]}</div>
+              <div style="font-size:11px;font-weight:700;color:{dc};">{d["chg1d"]:+.2f}% today</div>
+              <div style="font-size:10px;color:{mc};">1M: {d["chg1m"]:+.1f}%</div>
+              <div style="font-size:10px;color:#9ca3af;">{d["vol_signal"]}</div>
+              <div style="font-size:10px;color:{"#16a34a" if d["above50"] else "#dc2626"};">{"▲" if d["above50"] else "▼"} 50DMA {d["dma50_pct"]:+.1f}%</div>
+              {ath_badge}
+            </div>""", unsafe_allow_html=True)
+
+# ── PANEL 3: IV RANK SCANNER ─────────────────────────────────────────────────
+st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 8px;">Panel 3 - IV Rank - Buy or Sell Options Premium?</div>', unsafe_allow_html=True)
+st.markdown('<div style="font-size:11px;color:#6b7280;margin-bottom:8px;">IVR under 30 = options CHEAP → BUY calls/puts &nbsp;·&nbsp; IVR 30-60 = NEUTRAL &nbsp;·&nbsp; IVR over 60 = options EXPENSIVE → SELL premium (CSP/CC)</div>', unsafe_allow_html=True)
+
+with st.spinner("Calculating IV Rank from options chains..."):
+    iv_data = {}
+    for sym in hub_tickers[:10]:
+        iv_data[sym] = get_iv_rank(sym)
+
+if iv_data:
+    p3_cols = st.columns(len([v for v in iv_data.values() if v]))
+    valid_iv = [(sym,d) for sym,d in iv_data.items() if d]
+    for col, (sym, d) in zip(p3_cols, valid_iv):
+        ivr = d["ivr"]
+        vc  = d["vc"]; vbg = d["vbg"]
+        bar_col = "#1d4ed8" if ivr < 30 else "#d97706" if ivr < 60 else "#16a34a"
+        earn_warn = '<div style="font-size:9px;background:#fef9c3;color:#854d0e;padding:1px 4px;border-radius:2px;margin-top:3px;">⚠️ Earnings &lt;21d</div>' if d.get("near_earnings") else ""
+        with col:
+            st.markdown(f"""
+            <div class="card" style="padding:8px 10px;background:{vbg};">
+              <div style="font-size:12px;font-weight:700;color:#111827;">{sym}</div>
+              <div style="font-size:18px;font-weight:700;color:{vc};">IVR {ivr}</div>
+              <div style="height:5px;background:#e5e7eb;border-radius:3px;overflow:hidden;margin:4px 0;">
+                <div style="height:5px;width:{ivr}%;background:{bar_col};border-radius:3px;"></div>
+              </div>
+              <div style="font-size:10px;font-weight:700;color:{vc};">{d["verdict"]}</div>
+              <div style="font-size:9px;color:#9ca3af;">IV {d["iv"]:.0f}% · HV30 {d["hv30"]:.0f}%</div>
+              {earn_warn}
+            </div>""", unsafe_allow_html=True)
+
+# ── PANEL 4: SMART MONEY ─────────────────────────────────────────────────────
+st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 8px;">Panel 4 - Smart Money Signals</div>', unsafe_allow_html=True)
+
+p4_c1, p4_c2, p4_c3 = st.columns(3)
+
+# Unusual options flow
+with p4_c1:
+    st.markdown('<div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:6px;">🎯 Unusual Options Flow</div>', unsafe_allow_html=True)
+    with st.spinner("Scanning options chains..."):
+        all_unusual = []
+        for sym in hub_tickers[:8]:
+            flow = get_unusual_options_flow(sym)
+            if flow:
+                for c in flow.get("unusual_calls",[])[:2]:
+                    all_unusual.append({**c, "sym":sym, "signal":"BULLISH", "col":"#15803d", "bg":"#f0fdf4", "bc":"#bbf7d0"})
+                for p in flow.get("unusual_puts",[])[:2]:
+                    all_unusual.append({**p, "sym":sym, "signal":"BEARISH", "col":"#b91c1c", "bg":"#fef2f2", "bc":"#fecaca"})
+    all_unusual.sort(key=lambda x: -x["vol"])
+    if all_unusual:
+        for u in all_unusual[:6]:
+            st.markdown(f"""
+            <div style="background:{u["bg"]};border:1px solid {u["bc"]};border-radius:5px;padding:6px 8px;margin-bottom:5px;font-size:11px;">
+              <div style="display:flex;justify-content:space-between;">
+                <span style="font-weight:700;color:#374151;">{u["sym"]} {u["type"]} ${u["strike"]:.0f}</span>
+                <span style="font-weight:700;color:{u["col"]};">{u["signal"]}</span>
+              </div>
+              <div style="color:#6b7280;font-size:10px;">Vol: {u["vol"]:,} · OI: {u["oi"]:,} · Ratio: {u["vol"]/max(u["oi"],1):.1f}x · IV: {u["iv"]:.0f}%</div>
+              <div style="color:#9ca3af;font-size:10px;">Exp: {u["exp"]} · {u.get("otm",0):+.1f}% OTM</div>
+            </div>""", unsafe_allow_html=True)
+    else:
+        st.caption("No unusual options flow detected in current scan")
+
+# Insider Form 4
+with p4_c2:
+    st.markdown('<div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:6px;">👤 Insider Form 4 Filings (SEC)</div>', unsafe_allow_html=True)
+    with st.spinner("Checking SEC EDGAR..."):
+        insider_filings = []
+        for sym in hub_tickers[:6]:
+            filings = get_sec_form4(sym)
+            for f in filings[:2]:
+                insider_filings.append({**f, "sym":sym})
+    if insider_filings:
+        for f in insider_filings[:8]:
+            st.markdown(f"""
+            <div style="border-bottom:1px solid #f3f4f6;padding:5px 0;font-size:11px;">
+              <div style="font-weight:700;color:#374151;">{f["sym"]} · {f["name"][:25]}</div>
+              <div style="color:#9ca3af;font-size:10px;">Filed: {f["filed"]}</div>
+            </div>""", unsafe_allow_html=True)
+        st.caption("Source: SEC EDGAR Form 4 filings")
+    else:
+        st.caption("No recent Form 4 filings found — try adding more tickers above")
+
+# Sector ETF flow
+with p4_c3:
+    st.markdown('<div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:6px;">🏦 Sector ETF Institutional Flow</div>', unsafe_allow_html=True)
+    with st.spinner("Checking sector flows..."):
+        etf_flow = get_sector_etf_flow()
+    if etf_flow:
+        inflows  = [(k,v) for k,v in etf_flow.items() if v["flow"]=="INFLOW"]
+        outflows = [(k,v) for k,v in etf_flow.items() if v["flow"]=="OUTFLOW"]
+        inflows.sort(key=lambda x:  -x[1]["chg1d"])
+        outflows.sort(key=lambda x:  x[1]["chg1d"])
+        for name, v in (inflows + outflows)[:8]:
+            fc = "#16a34a" if v["flow"]=="INFLOW" else "#dc2626" if v["flow"]=="OUTFLOW" else "#9ca3af"
+            flow_lbl = "▲ INFLOW" if v["flow"]=="INFLOW" else "▼ OUTFLOW" if v["flow"]=="OUTFLOW" else "— Neutral"
+            st.markdown(f"""
+            <div style="display:flex;justify-content:space-between;border-bottom:1px solid #f3f4f6;padding:4px 0;font-size:11px;">
+              <span style="font-weight:600;color:#374151;">{name}</span>
+              <span style="color:{fc};font-weight:600;">{flow_lbl} {v["chg1d"]:+.2f}% {v["vol_ratio"]}x vol</span>
+            </div>""", unsafe_allow_html=True)
+
+# Short interest changes (already have data)
+st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 6px;">Short Interest Changes</div>', unsafe_allow_html=True)
+with st.spinner("Loading short interest..."):
+    hub_si = get_short_interest(hub_tickers)
+if hub_si:
+    si_cols = st.columns(min(len(hub_si),6))
+    for col, d in zip(si_cols, hub_si[:6]):
+        sc = "#dc2626" if d["si"] > 20 else "#d97706" if d["si"] > 10 else "#9ca3af"
+        with col:
+            st.markdown(f"""
+            <div class="card" style="padding:8px;text-align:center;">
+              <div style="font-size:12px;font-weight:700;">{d["sym"]}</div>
+              <div style="font-size:14px;font-weight:700;color:{sc};">SI {d["si"]:.1f}%</div>
+              <div style="font-size:10px;color:#9ca3af;">DTC {d["dtc"]:.1f}d</div>
+              <div style="font-size:10px;color:{("#16a34a" if d["mom"]>0 else "#dc2626")};">{d["mom"]:+.1f}% 1M</div>
+            </div>""", unsafe_allow_html=True)
+
+# ── PANEL 5: TECHNICAL SETUP ──────────────────────────────────────────────────
+st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 8px;">Panel 5 - Technical Setup - Strike Selection Guide</div>', unsafe_allow_html=True)
+st.markdown('<div style="font-size:11px;color:#6b7280;margin-bottom:8px;">Key levels for strike placement — support for CSP strikes, resistance for call spreads, ATR for stop placement.</div>', unsafe_allow_html=True)
+
+with st.spinner("Running technical analysis..."):
+    tech_data = {}
+    for sym in hub_tickers[:8]:
+        tech_data[sym] = compute_signals(sym)
+
+if tech_data:
+    p5_cols = st.columns(min(len(tech_data),4))
+    valid_tech = [(sym, d) for sym, d in tech_data.items() if d and not d.get("error")]
+    for col, (sym, d) in zip(p5_cols, valid_tech[:8]):
+        score = d["score"]
+        vc = "#16a34a" if score >= 65 else "#dc2626" if score <= 35 else "#d97706"
+        with col:
+            st.markdown(f"""
+            <div class="card" style="padding:8px 10px;">
+              <div style="font-size:12px;font-weight:700;color:#111827;">{sym} ${d["price"]:.0f}</div>
+              <div style="font-size:10px;color:#9ca3af;margin-top:3px;">Signal: <span style="font-weight:700;color:{vc};">{score}/100</span></div>
+              <div style="font-size:10px;color:#374151;">50DMA: ${d["sma50"]:.0f} ({d["price"]/d["sma50"]*100-100:+.1f}%)</div>
+              <div style="font-size:10px;color:#374151;">200DMA: ${d["sma200"]:.0f}</div>
+              <div style="font-size:10px;color:#374151;">ATR: ${d["atr"]:.2f}</div>
+              <div style="font-size:10px;color:#374151;">RSI: {d["rsi"]:.0f} · {"Overbought" if d["rsi"]>70 else "Oversold" if d["rsi"]<30 else "Neutral"}</div>
+              <div style="font-size:10px;color:#9ca3af;margin-top:2px;">CSP zone: ${d["price"]-d["atr"]*1.5:.0f}-${d["price"]-d["atr"]:.0f}</div>
+            </div>""", unsafe_allow_html=True)
+
+# ── PANEL 6: CLAUDE TRADE SYNTHESIS ──────────────────────────────────────────
+st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 8px;">Panel 6 - Claude Trade Synthesis - Full Trade Plans</div>', unsafe_allow_html=True)
+
+if ant_key:
+    if st.button("🤖 Generate Today's Trade Plans", key="gen_trades", type="primary", use_container_width=False):
+        # Build comprehensive signals JSON for Claude
+        signals = {
+            "date": today_str,
+            "market": {"vix": vix_price, "spy_1m": spy_d.get("chg1m",0),
+                       "regime": "Risk-On" if vix_price < 20 else "Risk-Off" if vix_price > 28 else "Neutral"},
+            "price_momentum": {d["sym"]: {"chg1d": d["chg1d"], "chg1m": d["chg1m"],
+                                           "vol_ratio": d["vol_ratio"], "above50dma": d["above50"]}
+                               for d in moving_data},
+            "iv_rank": {sym: {"ivr": d["ivr"], "verdict": d["verdict"],
+                               "near_earnings": d.get("near_earnings",False)}
+                        for sym, d in iv_data.items() if d},
+            "unusual_options": [{"sym":u["sym"],"type":u["type"],"strike":u["strike"],
+                                  "vol":u["vol"],"signal":u["signal"]}
+                                 for u in all_unusual[:10]],
+            "sector_flow": {k:{"flow":v["flow"],"chg1d":v["chg1d"],"vol_ratio":v["vol_ratio"]}
+                           for k,v in (etf_flow or {}).items()},
+            "short_interest": {d["sym"]:{"si":d["si"],"dtc":d["dtc"],"momentum":d["mom"]}
+                               for d in (hub_si or [])},
+            "technicals": {sym:{"score":d["score"],"rsi":d["rsi"],"atr":d["atr"],
+                                 "sma50":d["sma50"],"price":d["price"]}
+                           for sym,d in tech_data.items() if d and not d.get("error")},
+        }
+        signals_json = json.dumps(signals, indent=2)
+        with st.spinner("Claude analysing all signals and building trade plans... (30-45 seconds)"):
+            trade_plans = get_claude_trade_plans(
+                signals_json, account_size,
+                vix_price, spy_d.get("chg1m",0), today_str
+            )
+        if trade_plans:
+            st.session_state["last_trade_plans"] = trade_plans
+            st.session_state["last_trade_date"]  = today_str
+
+    # Display cached trade plans
+    trade_plans = st.session_state.get("last_trade_plans", {})
+    trade_date  = st.session_state.get("last_trade_date", "")
+
+    if trade_plans:
+        if trade_date != today_str:
+            st.warning(f"⚠️ These plans were generated on {trade_date} — click regenerate for today's plans")
+
+        # Market context
+        if trade_plans.get("market_context"):
+            st.markdown(f"""
+            <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px 14px;margin-bottom:12px;">
+              <div style="font-size:11px;font-weight:700;color:#374151;margin-bottom:4px;">📊 Market Context</div>
+              <div style="font-size:12px;color:#374151;">{trade_plans["market_context"]}</div>
+            </div>""", unsafe_allow_html=True)
+
+        # Trade cards
+        trades = trade_plans.get("trades", [])
+        for i in range(0, len(trades), 2):
+            t_cols = st.columns(2)
+            for j, col in enumerate(t_cols):
+                if i+j >= len(trades): break
+                t = trades[i+j]
+                strat = t.get("strategy","")
+                sc = "#15803d" if "CALL" in strat and "PUT" not in strat else "#b91c1c" if "PUT" in strat else "#1d4ed8"
+                sbg= "#f0fdf4" if "CALL" in strat and "PUT" not in strat else "#fef2f2" if "PUT" in strat else "#eff6ff"
+                sbc= "#bbf7d0" if "CALL" in strat and "PUT" not in strat else "#fecaca" if "PUT" in strat else "#bfdbfe"
+
+                sigs = t.get("signals_aligned",[])
+                sig_pills = " ".join([f'<span style="background:#f3f4f6;color:#374151;font-size:10px;padding:1px 6px;border-radius:3px;">{s}</span>' for s in sigs])
+
+                with col:
+                    st.markdown(f"""
+                    <div style="background:{sbg};border:2px solid {sbc};border-radius:8px;padding:14px 16px;margin-bottom:10px;">
+                      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+                        <div>
+                          <span style="font-size:18px;font-weight:700;color:#111827;">#{t.get("rank",i+j+1)} {t.get("sym","")}</span>
+                          <span style="background:{sc};color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:3px;margin-left:8px;">{strat}</span>
+                        </div>
+                        <span style="font-size:12px;font-weight:600;color:{sc};">{t.get("pct_account","")}</span>
+                      </div>
+
+                      <div style="font-size:12px;color:#374151;margin-bottom:6px;font-style:italic;">{t.get("why","")}</div>
+
+                      <div style="margin-bottom:8px;">{sig_pills}</div>
+
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:11px;margin-bottom:8px;">
+                        <div style="background:#fff;border-radius:4px;padding:5px 8px;">
+                          <div style="color:#9ca3af;font-size:10px;">STRIKE / EXPIRY</div>
+                          <div style="font-weight:700;color:#374151;">${t.get("strike","")} · {t.get("expiry","")}</div>
+                        </div>
+                        <div style="background:#fff;border-radius:4px;padding:5px 8px;">
+                          <div style="color:#9ca3af;font-size:10px;">CONTRACTS / COST</div>
+                          <div style="font-weight:700;color:#374151;">{t.get("contracts","")} · {t.get("cost","")}</div>
+                        </div>
+                        <div style="background:#fff;border-radius:4px;padding:5px 8px;">
+                          <div style="color:#9ca3af;font-size:10px;">ENTRY</div>
+                          <div style="font-weight:600;color:#374151;">{t.get("entry","")}</div>
+                        </div>
+                        <div style="background:#fff;border-radius:4px;padding:5px 8px;">
+                          <div style="color:#9ca3af;font-size:10px;">STOP LOSS</div>
+                          <div style="font-weight:600;color:#dc2626;">{t.get("stop","")}</div>
+                        </div>
+                        <div style="background:#fff;border-radius:4px;padding:5px 8px;">
+                          <div style="color:#9ca3af;font-size:10px;">TARGET 1</div>
+                          <div style="font-weight:600;color:#16a34a;">{t.get("target1","")}</div>
+                        </div>
+                        <div style="background:#fff;border-radius:4px;padding:5px 8px;">
+                          <div style="color:#9ca3af;font-size:10px;">TARGET 2 + R:R</div>
+                          <div style="font-weight:600;color:#16a34a;">{t.get("target2","")} · {t.get("risk_reward","")}</div>
+                        </div>
+                      </div>
+
+                      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:4px;padding:5px 8px;font-size:10px;color:#854d0e;">
+                        ⚠️ Avoid if: {t.get("avoid_if","")}
+                      </div>
+                    </div>""", unsafe_allow_html=True)
+
+        # Avoid list and key risk
+        avoid = trade_plans.get("avoid_today", [])
+        key_risk = trade_plans.get("key_risk","")
+        if avoid or key_risk:
+            av_col, kr_col = st.columns(2)
+            with av_col:
+                if avoid:
+                    st.markdown('<div style="font-size:11px;font-weight:600;color:#b91c1c;margin-bottom:5px;">🚫 Avoid Today</div>', unsafe_allow_html=True)
+                    for a in avoid:
+                        st.markdown(f'<div style="font-size:11px;color:#374151;padding:3px 0;border-bottom:1px solid #f3f4f6;">• {a}</div>', unsafe_allow_html=True)
+            with kr_col:
+                if key_risk:
+                    st.markdown(f"""
+                    <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:10px 14px;">
+                      <div style="font-size:11px;font-weight:600;color:#b91c1c;margin-bottom:4px;">⚠️ Key Risk Today</div>
+                      <div style="font-size:12px;color:#374151;">{key_risk}</div>
+                    </div>""", unsafe_allow_html=True)
+
+        st.caption(f"Uses Claude Sonnet · ~$0.03 per generation · Account: ${account_size:,} · Generated: {trade_date}")
+
+    else:
+        st.markdown("""
+        <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:20px;text-align:center;color:#6b7280;">
+          <div style="font-size:16px;margin-bottom:8px;">🤖</div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:4px;">Click the button above to generate today's trade plans</div>
+          <div style="font-size:11px;">Claude will read all signals from panels 2-5 and produce specific trade plans with strikes, expiry, position size, entry, stop and targets.</div>
+        </div>""", unsafe_allow_html=True)
+else:
+    st.markdown("""
+    <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:16px;">
+      <div style="font-size:13px;color:#6b7280;">Add <b>ANTHROPIC_API_KEY</b> to Streamlit secrets to enable Claude trade synthesis. This is the most powerful feature — it reads all 5 panels and produces specific trade plans with exact strikes, expiry, position size, entry, stop and targets.</div>
+    </div>""", unsafe_allow_html=True)
 
 # ── FOOTER ─────────────────────────────────────────────────────────────────────
 st.markdown("---")

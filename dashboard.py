@@ -2283,7 +2283,17 @@ if ant_key:
                                  "sma50":d["sma50"],"price":d["price"]}
                            for sym,d in tech_data.items() if d and not d.get("error")},
         }
-        signals_json = json.dumps(signals, indent=2)
+        # Convert all numpy/pandas types to native Python for JSON serialisation
+        import numpy as np
+        class SafeEncoder(json.JSONEncoder):
+            def default(self, o):
+                if isinstance(o, (np.integer,)): return int(o)
+                if isinstance(o, (np.floating,)): return round(float(o), 4)
+                if isinstance(o, (np.bool_,)): return bool(o)
+                if isinstance(o, (np.ndarray,)): return o.tolist()
+                if hasattr(o, 'item'): return o.item()
+                return super().default(o)
+        signals_json = json.dumps(signals, indent=2, cls=SafeEncoder)
         with st.spinner("Claude analysing all signals and building trade plans... (30-45 seconds)"):
             trade_plans = get_claude_trade_plans(
                 signals_json, account_size,

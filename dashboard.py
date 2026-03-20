@@ -1009,7 +1009,7 @@ with chart_col1:
         legend=dict(orientation="h",y=1.1,font=dict(size=11)),
         xaxis=dict(showgrid=False,showticklabels=False),
         yaxis=dict(gridcolor="#f3f4f6",ticksuffix="%"),hovermode="x unified")
-    st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar":False})
+    st.plotly_chart(fig1, use_container_width=True, config={"displayModeBar":False}, key="chart_cap_size")
 
 with chart_col2:
     st.markdown('<div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:5px;">Style & risk appetite (30 days)</div>', unsafe_allow_html=True)
@@ -1029,7 +1029,7 @@ with chart_col2:
         legend=dict(orientation="h",y=1.1,font=dict(size=11)),
         xaxis=dict(showgrid=False,showticklabels=False),
         yaxis=dict(gridcolor="#f3f4f6",ticksuffix="%"),hovermode="x unified")
-    st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar":False})
+    st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar":False}, key="chart_style_risk")
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 3 — CROSS-MARKET RELATIONSHIPS
@@ -1272,7 +1272,7 @@ st.markdown(f"""
 # SECTION 5 — SECTOR HEATMAP
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🔥 Sector Momentum Heatmap</div>', unsafe_allow_html=True)
-hp = st.radio("Period", ["1d","1w","1m"], horizontal=True, label_visibility="collapsed")
+hp = st.radio("Period", ["1d","1w","1m"], horizontal=True, label_visibility="collapsed", key="sector_period")
 
 if sectors:
     hm_cols = st.columns(len(sectors))
@@ -2020,7 +2020,7 @@ if run or ticker_input:
                     xaxis=dict(showgrid=False,showticklabels=False,title="60 trading days"),
                     yaxis=dict(gridcolor="#f3f4f6",tickprefix="$",range=[mn_p,mx_p]),
                     showlegend=False,hovermode="x unified")
-                st.plotly_chart(fig_s,use_container_width=True,config={"displayModeBar":False})
+                st.plotly_chart(fig_s,use_container_width=True,config={"displayModeBar":False},key=f"chart_screener_{sym}")
         elif sig and sig.get("error"):
             st.error(f"Could not fetch **{sym}**: {sig['error']}")
         else:

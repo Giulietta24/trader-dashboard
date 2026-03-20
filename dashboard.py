@@ -192,7 +192,7 @@ def get_cross_market():
         "XLF/SPY": ("XLF","SPY","Financials vs Market","Rising=banks healthy, economy strong. Watch JPM, GS, BAC."),
         "XLK/SPY": ("XLK","SPY","Tech vs Market","Rising=growth in favour, risk-on. Falls when yields rise."),
         "XLP/XLY": ("XLP","XLY","Defensives vs Disc","Rising=caution, consumers pulling back. Early recession signal."),
-        "HYG/LQD": ("HYG","LQD","Junk vs Inv Grade","Falling=credit stress building. Best leading recession indicator."),
+        "VIX/SPY": ("^VIX","SPY","Vol vs Market","Rising=fear spiking while market holds=warning. Falling=market rallying with falling fear=healthy. Best complacency gauge."),
         "TLT/SPY": ("TLT","SPY","Bonds vs Stocks","Rising=money fleeing stocks to safety. Watch closely."),
         "GLD/TLT": ("GLD","TLT","Gold vs Bonds","Rising=inflation fear over recession fear. Stagflation signal."),
         "EEM/SPY": ("EEM","SPY","EM vs US","Rising=weak dollar, global risk-on. China proxy."),
@@ -206,10 +206,12 @@ def get_cross_market():
             if not h1.empty and not h2.empty and len(h1)>=6 and len(h2)>=6:
                 p1=h1["Close"].iloc[-1]; p2=h2["Close"].iloc[-1]
                 r_now=p1/p2
+                r_1d =h1["Close"].iloc[-2]/h2["Close"].iloc[-2] if len(h1)>=2 else r_now
                 r_1w =h1["Close"].iloc[-6]/h2["Close"].iloc[-6] if len(h1)>=6 else r_now
                 r_1m =h1["Close"].iloc[-22]/h2["Close"].iloc[-22] if len(h1)>=22 else r_now
                 r_3m =h1["Close"].iloc[0]/h2["Close"].iloc[0]
                 out[key]={"label":label,"desc":desc,
+                          "chg_1d":(r_now-r_1d)/r_1d*100,
                           "chg_1w":(r_now-r_1w)/r_1w*100,
                           "chg_1m":(r_now-r_1m)/r_1m*100,
                           "chg_3m":(r_now-r_3m)/r_3m*100}
@@ -748,7 +750,7 @@ with chart_col2:
 # SECTION 3 — CROSS-MARKET RELATIONSHIPS
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🔗 Cross-Market Relationships</div>', unsafe_allow_html=True)
-cm_period = st.radio("Cross-market period", ["1W","1M","3M"], horizontal=True, label_visibility="collapsed", key="cm_period_radio")
+cm_period = st.radio("Cross-market period", ["1D","1W","1M","3M"], horizontal=True, label_visibility="collapsed", key="cm_period_radio")
 
 with st.spinner("Loading cross-market data..."):
     cross = get_cross_market()
@@ -756,7 +758,7 @@ with st.spinner("Loading cross-market data..."):
 if cross:
     cm_cols = st.columns(len(cross))
     for col,(key,d) in zip(cm_cols, cross.items()):
-        period_key = {"1W":"chg_1w","1M":"chg_1m","3M":"chg_3m"}.get(cm_period,"chg_1m")
+        period_key = {"1D":"chg_1d","1W":"chg_1w","1M":"chg_1m","3M":"chg_3m"}.get(cm_period,"chg_1d")
         chg = d.get(period_key, d.get("chg_1m",0)); c = clr(chg)
         bg = "#f0fdf4" if chg>1 else "#fef2f2" if chg<-1 else "#f9fafb"
         bc = "#bbf7d0" if chg>1 else "#fecaca" if chg<-1 else "#e5e7eb"
@@ -774,7 +776,7 @@ if cross:
               <div style="font-size:14px;font-weight:700;color:{c};margin-top:4px;">{arr(chg)} {chg:+.1f}%</div>
               <div style="font-size:9px;color:#9ca3af;">{d['label']}</div>
             </div>""", unsafe_allow_html=True)
-    st.caption("1-month ratio change · Green=first asset outperforming · Red=second asset outperforming · Hover ℹ for what it means")
+    st.caption("1D/1W/1M/3M ratio change · Green=first asset outperforming · Red=second asset outperforming · Hover ℹ for what it means · Default: 1D")
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 4 — BREADTH & INTERNALS

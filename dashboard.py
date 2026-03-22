@@ -17,7 +17,7 @@ def _anthropic_key():
 
 # ── PAGE CONFIG ────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Trader Intelligence Dashboard", page_icon="📊",
-                   layout="wide", initial_sidebar_state="collapsed")
+                   layout="wide", initial_sidebar_state="expanded")
 
 # ── SESSION STATE — must be before any section that uses it ───────────────────
 if "custom_tickers"  not in st.session_state: st.session_state.custom_tickers  = {}
@@ -30,8 +30,7 @@ st.markdown("""
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
 html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 .block-container{padding:1rem 1.5rem 2rem;max-width:1600px;}
-[data-testid="collapsedControl"]{display:none!important;}
-section[data-testid="stSidebar"]{display:none!important;}
+/* sidebar enabled */
 .sec{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
      color:#9ca3af;margin:1.4rem 0 .7rem;border-bottom:1px solid #e5e7eb;padding-bottom:5px;}
 .card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;}
@@ -58,6 +57,18 @@ section[data-testid="stSidebar"]{display:none!important;}
 .tw:hover .tb{visibility:visible;opacity:1;}
 .tw .tb::after{content:"";position:absolute;top:100%;right:12px;left:auto;
   margin:0;border:5px solid transparent;border-top-color:#1e293b;}
+/* Sidebar nav */
+section[data-testid="stSidebar"]{background:#111827!important;min-width:220px!important;max-width:220px!important;}
+section[data-testid="stSidebar"] *{color:#f1f5f9!important;}
+section[data-testid="stSidebar"] .stButton>button{
+  background:transparent!important;border:none!important;
+  color:#9ca3af!important;font-size:12px!important;
+  text-align:left!important;padding:6px 12px!important;
+  width:100%!important;border-radius:6px!important;}
+section[data-testid="stSidebar"] .stButton>button:hover{
+  background:#1f2937!important;color:#f1f5f9!important;}
+section[data-testid="stSidebar"] .stButton>button[kind="primary"]{
+  background:#2563eb!important;color:#fff!important;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -833,6 +844,7 @@ No jargon without explanation."""
         text=r.json().get("content",[{}])[0].get("text","")
         return text.strip() if text else None
     except: return None
+# ════════════════════════════════════════════════════════════════════════════════
 # LOAD ALL DATA
 # ════════════════════════════════════════════════════════════════════════════════
 with st.spinner("Loading live market data..."):
@@ -844,26 +856,149 @@ with st.spinner("Loading live market data..."):
 vix_price = macro.get("VIX",{}).get("price",18)
 today_str = datetime.now().strftime("%Y-%m-%d")
 spy_d = idx.get("SPY",{}); qqq_d = idx.get("QQQ",{}); iwm_d = idx.get("IWM",{})
+fh_key  = _finnhub_key()
+ant_key = _anthropic_key()
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SIDEBAR NAVIGATION
+# ════════════════════════════════════════════════════════════════════════════════
+spy_1m_s  = spy_d.get("chg1m", 0)
+rsp_spy_s = breadth.get("rsp_spy", 0)
+if vix_price < 18 and spy_1m_s > 0:
+    regime_s, regime_sc = "BULL - RISK ON", "#16a34a"
+elif vix_price > 28:
+    regime_s, regime_sc = "RISK OFF", "#dc2626"
+elif vix_price > 22:
+    regime_s, regime_sc = "CAUTION", "#d97706"
+else:
+    regime_s, regime_sc = "NEUTRAL", "#3b82f6"
+
+with st.sidebar:
+    st.markdown(f"""
+    <div style="padding:12px 8px 4px;">
+      <div style="font-size:15px;font-weight:700;color:#f1f5f9;margin-bottom:2px;">Trader Dashboard</div>
+      <div style="background:#1f2937;border-radius:6px;padding:8px 10px;margin:8px 0 12px;">
+        <div style="font-size:9px;color:#6b7280;margin-bottom:2px;">REGIME</div>
+        <div style="font-size:13px;font-weight:700;color:{regime_sc};">{regime_s}</div>
+        <div style="font-size:10px;color:#6b7280;">VIX {vix_price:.1f} | SPY {spy_1m_s:+.1f}% 1M</div>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    st.markdown("**Market Awareness**")
+    awareness_links = [
+        ("regime",      "🎯 Market Regime"),
+        ("indexes",     "📊 Index Comparison"),
+        ("cross",       "🔗 Cross-Market"),
+        ("breadth",     "🩺 Breadth & Internals"),
+        ("sectors",     "🔥 Sector Heatmap"),
+        ("conditions",  "🌐 Market Conditions"),
+        ("commodities", "🛢️ Commodities"),
+        ("inflation",   "📈 Inflation"),
+        ("themes",      "🎯 Options Themes"),
+        ("sentiment",   "😱 Sentiment"),
+        ("calendar",    "📅 Calendar"),
+        ("squeeze",     "💥 Short Squeeze"),
+        ("screener",    "🔬 Screener"),
+    ]
+    for anchor, label in awareness_links:
+        st.markdown(f'<a href="#{anchor}" style="display:block;padding:4px 0;font-size:12px;color:#9ca3af;text-decoration:none;">{label}</a>', unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown("**Decision Hub**")
+    hub_links = [
+        ("hub",    "⚙️ Settings"),
+        ("panel2", "📈 What's Moving"),
+        ("panel3", "📊 IV Rank"),
+        ("panel4", "🏦 Smart Money"),
+        ("panel5", "📐 Technicals"),
+        ("panel6", "🤖 Trade Plans"),
+    ]
+    for anchor, label in hub_links:
+        st.markdown(f'<a href="#{anchor}" style="display:block;padding:4px 0;font-size:12px;color:#9ca3af;text-decoration:none;">{label}</a>', unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.caption(f"{'Finnhub live' if fh_key else 'No Finnhub key'} | {'AI active' if ant_key else 'No AI key'}")
 
 # ════════════════════════════════════════════════════════════════════════════════
 # HEADER
 # ════════════════════════════════════════════════════════════════════════════════
-st.title("📊 Trader Intelligence Dashboard")
-fh_key = _finnhub_key()
-ant_key = _anthropic_key()
-badge = '<span class="badge b-buy" style="font-size:12px;padding:5px 12px;">● REAL-TIME · FINNHUB</span>' if fh_key else '<span class="badge b-hold" style="font-size:12px;padding:5px 12px;">◐ 15-MIN DELAY · YFINANCE</span>'
-ai_badge = '&nbsp;<span class="badge b-neu" style="font-size:12px;padding:5px 12px;">🤖 AI ACTIVE</span>' if ant_key else '&nbsp;<span class="badge b-sell" style="font-size:12px;padding:5px 12px;">⚠️ NO AI KEY</span>'
+st.title("Trader Intelligence Dashboard")
+badge    = '<span class="badge b-buy">REAL-TIME FINNHUB</span>' if fh_key else '<span class="badge b-hold">15-MIN DELAY YFINANCE</span>'
+ai_badge = '&nbsp;<span class="badge b-neu">AI ACTIVE</span>' if ant_key else '&nbsp;<span class="badge b-sell">NO AI KEY</span>'
+st.markdown(f'<div style="margin-bottom:4px;">{badge}{ai_badge} &nbsp;<span style="font-size:12px;color:#9ca3af;">{datetime.now().strftime("%A %d %B %Y %H:%M")} - Yahoo Finance + Finnhub + FRED</span></div>', unsafe_allow_html=True)
+
+# ════════════════════════════════════════════════════════════════════════════════
+# BRIDGE — connects market awareness to options strategy
+# ════════════════════════════════════════════════════════════════════════════════
+spy_1m  = spy_d.get("chg1m", 0)
+rsp_spy = breadth.get("rsp_spy", 0)
+hyg_chg = breadth.get("hyg", {}).get("chg1m", 0)
+y10     = macro.get("10Y Yield", {}).get("price", 4.3)
+y3m     = macro.get("3M T-Bill", {}).get("price", 3.6)
+spread  = y10 - y3m
+
+if vix_price > 28:
+    opt_bias = "HIGH VIX: SELL PREMIUM (CSPs, Covered Calls) or buy puts on weak stocks"
+    opt_col, opt_bg, opt_bc = "#b91c1c", "#fef2f2", "#fecaca"
+elif vix_price < 16:
+    opt_bias = "LOW VIX: BUY PREMIUM cheap - Long Calls on strong stocks"
+    opt_col, opt_bg, opt_bc = "#15803d", "#f0fdf4", "#bbf7d0"
+elif 16 <= vix_price <= 22:
+    opt_bias = "MODERATE VIX: CSPs and Covered Calls ideal - premium fair, not too cheap or expensive"
+    opt_col, opt_bg, opt_bc = "#1d4ed8", "#eff6ff", "#bfdbfe"
+else:
+    opt_bias = "ELEVATED VIX: Sell premium on quality names, avoid buying expensive options"
+    opt_col, opt_bg, opt_bc = "#d97706", "#fffbeb", "#fde68a"
+
+b_broad  = rsp_spy > 0
+b_credit = hyg_chg > 0
+b_curve  = spread > 0
+b_trend  = spy_1m > 0
+bull_count = sum([b_broad, b_credit, b_curve, b_trend])
+
 st.markdown(f"""
-<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:4px;">
-  <span style="font-size:12px;color:#9ca3af;">Live market data · {datetime.now().strftime('%A %d %B %Y · %H:%M')} · Yahoo Finance + Finnhub + FRED</span>
-  <div style="display:flex;gap:6px;align-items:center;">{badge}{ai_badge}</div>
+<div style="background:#f8faff;border:2px solid #c7d2fe;border-radius:10px;padding:14px 18px;margin:10px 0 16px;">
+  <div style="font-size:11px;font-weight:700;color:#3730a3;margin-bottom:10px;letter-spacing:.04em;">
+    TODAY: MARKET SIGNALS TO OPTIONS STRATEGY
+  </div>
+  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;">
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:8px;">
+      <div style="font-size:9px;color:#9ca3af;">VIX (Fear)</div>
+      <div style="font-size:18px;font-weight:700;color:{'#dc2626' if vix_price>25 else '#d97706' if vix_price>18 else '#16a34a'};">{vix_price:.1f}</div>
+      <div style="font-size:10px;color:#6b7280;">{'High fear' if vix_price>25 else 'Caution' if vix_price>18 else 'Calm'}</div>
+    </div>
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:8px;">
+      <div style="font-size:9px;color:#9ca3af;">Breadth</div>
+      <div style="font-size:14px;font-weight:700;color:{'#16a34a' if b_broad else '#dc2626'};">{'Broad' if b_broad else 'Narrow'}</div>
+      <div style="font-size:10px;color:#6b7280;">RSP-SPY {rsp_spy:+.1f}pp</div>
+    </div>
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:8px;">
+      <div style="font-size:9px;color:#9ca3af;">Credit</div>
+      <div style="font-size:14px;font-weight:700;color:{'#16a34a' if b_credit else '#dc2626'};">{'Healthy' if b_credit else 'Stress'}</div>
+      <div style="font-size:10px;color:#6b7280;">HYG {hyg_chg:+.1f}% 1M</div>
+    </div>
+    <div style="background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:8px;">
+      <div style="font-size:9px;color:#9ca3af;">Overall</div>
+      <div style="font-size:14px;font-weight:700;color:{'#16a34a' if bull_count>=3 else '#dc2626' if bull_count<=1 else '#d97706'};">{bull_count}/4 Bull</div>
+      <div style="font-size:10px;color:#6b7280;">signals positive</div>
+    </div>
+  </div>
+  <div style="background:{opt_bg};border:1px solid {opt_bc};border-radius:6px;padding:10px 14px;">
+    <div style="font-size:10px;color:#6b7280;font-weight:600;margin-bottom:3px;">STRATEGY BIAS TODAY:</div>
+    <div style="font-size:13px;font-weight:700;color:{opt_col};">{opt_bias}</div>
+  </div>
+  <div style="font-size:10px;color:#9ca3af;margin-top:8px;">
+    Scroll down to confirm signals in detail - then use <b>Options Decision Hub</b> at the bottom for specific trade plans with strikes, expiry and position size
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
 st.markdown("---")
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 1 — MARKET REGIME BAR
+# SECTION 1 — MARKET REGIME
+st.markdown('<div id="regime"></div>', unsafe_allow_html=True)
+# BAR
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🎯 Market Regime — Instant Read</div>', unsafe_allow_html=True)
 
@@ -910,6 +1045,7 @@ for col,(label,val,vc,bg,desc) in zip(reg_cols, regime_items):
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 2 — INDEX COMPARISON
+st.markdown('<div id="indexes"></div>', unsafe_allow_html=True)
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">📊 Index Comparison — Full Cap Size & Style Picture</div>', unsafe_allow_html=True)
 
@@ -1027,7 +1163,9 @@ with chart_col2:
     st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar":False}, key="chart_style_risk")
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 3 — CROSS-MARKET RELATIONSHIPS
+# SECTION 3 — CROSS-MARKET
+st.markdown('<div id="cross"></div>', unsafe_allow_html=True)
+# RELATIONSHIPS
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🔗 Cross-Market Relationships</div>', unsafe_allow_html=True)
 cm_period = st.radio("Cross-market period", ["1D","1W","1M","3M"], horizontal=True, label_visibility="collapsed", key="cm_period_radio")
@@ -1059,7 +1197,9 @@ if cross:
     st.caption("1D/1W/1M/3M ratio change · Green=first asset outperforming · Red=second asset outperforming · Hover ℹ for what it means · Default: 1D")
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 4 — BREADTH & INTERNALS
+# SECTION 4 — BREADTH
+st.markdown('<div id="breadth"></div>', unsafe_allow_html=True)
+# & INTERNALS
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🩺 Market Breadth & Internals</div>', unsafe_allow_html=True)
 
@@ -1265,6 +1405,7 @@ st.markdown(f"""
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 5 — SECTOR HEATMAP
+st.markdown('<div id="sectors"></div>', unsafe_allow_html=True)
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🔥 Sector Momentum Heatmap</div>', unsafe_allow_html=True)
 hp = st.radio("Period", ["1d","1w","1m"], horizontal=True, label_visibility="collapsed", key="sector_period")
@@ -1286,6 +1427,7 @@ if sectors:
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 6 — MARKET CONDITIONS
+st.markdown('<div id="conditions"></div>', unsafe_allow_html=True)
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🌐 Market Conditions — Rates · Volatility · FX</div>', unsafe_allow_html=True)
 
@@ -1321,7 +1463,9 @@ spread=y10-y3m; sc="#16a34a" if spread>0 else "#dc2626"
 st.markdown(f'<div style="margin-top:6px;background:{"#f0fdf4" if spread>0 else "#fef2f2"};border:1px solid {"#bbf7d0" if spread>0 else "#fecaca"};border-radius:6px;padding:8px 14px;font-size:12px;display:inline-block;">Yield Curve (10Y-3M): <span style="font-weight:700;color:{sc};">{spread:+.2f}% · {"Normal" if spread>0 else "INVERTED — recession warning"}</span></div>', unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 7 — COMMODITIES & ENERGY
+# SECTION 7 — COMMODITIES
+st.markdown('<div id="commodities"></div>', unsafe_allow_html=True)
+# & ENERGY
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🛢️ Commodities & Energy</div>', unsafe_allow_html=True)
 
@@ -1358,7 +1502,9 @@ if comms:
         render_comm(agri)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 8 — INFLATION SIGNALS
+# SECTION 8 — INFLATION
+st.markdown('<div id="inflation"></div>', unsafe_allow_html=True)
+# SIGNALS
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">📈 Inflation Signals</div>', unsafe_allow_html=True)
 
@@ -1440,7 +1586,9 @@ with inf_c3:
 # ════════════════════════════════════════════════════════════════════════════════
 # ════════════════════════════════════════════════════════════════════════════════
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 9 — OPTIONS THEME SCANNER (Fully Dynamic — Claude + Yahoo Finance)
+# SECTION 9 — OPTIONS THEME
+st.markdown('<div id="themes"></div>', unsafe_allow_html=True)
+# SECTION 9 — OPTIONS THEME SCANNER (Fully Dynamic)
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🎯 Options Theme Scanner — What to Trade Today</div>', unsafe_allow_html=True)
 
@@ -1703,7 +1851,9 @@ with st.expander("⚙️ Add stocks to the scan universe"):
             st.rerun()
 
 
-# SECTION 10 — SENTIMENT & SMART MONEY
+# SECTION 10 — SENTIMENT
+st.markdown('<div id="sentiment"></div>', unsafe_allow_html=True)
+# & SMART MONEY
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">😱 Sentiment · Fear/Greed · Analyst Consensus · Insider Activity</div>', unsafe_allow_html=True)
 
@@ -1801,7 +1951,9 @@ with sc4:
     </div>""", unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 11 — AI OPTIONS FLOW
+# SECTION 11 — AI OPTIONS
+st.markdown('<div id="aioptions"></div>', unsafe_allow_html=True)
+# FLOW
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🤖 AI Options Flow Analysis — Powered by Claude</div>', unsafe_allow_html=True)
 
@@ -1831,7 +1983,9 @@ else:
     st.markdown('<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:14px 18px;font-size:13px;color:#6b7280;">Add <b>ANTHROPIC_API_KEY</b> to Streamlit secrets to enable AI options flow analysis. Uses Claude Haiku (~$0.008/day).</div>', unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 12 — CATALYST CALENDAR
+# SECTION 12 — CATALYST
+st.markdown('<div id="calendar"></div>', unsafe_allow_html=True)
+# CALENDAR
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">📅 Catalyst Calendar</div>', unsafe_allow_html=True)
 
@@ -1875,7 +2029,9 @@ for col,(t,d,typ,imp,c) in zip(cc,cats):
 st.caption(earn_src)
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 13 — SHORT SQUEEZE RADAR
+# SECTION 13 — SHORT SQUEEZE
+st.markdown('<div id="squeeze"></div>', unsafe_allow_html=True)
+# RADAR
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">💥 Short Squeeze Radar — Live (Yahoo Finance)</div>', unsafe_allow_html=True)
 
@@ -1918,6 +2074,7 @@ if sqz_data:
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 14 — LIVE STOCK SCREENER
+st.markdown('<div id="screener"></div>', unsafe_allow_html=True)
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🔬 Live Stock Screener — Real-Time Signal Breakdown</div>', unsafe_allow_html=True)
 st.markdown("Enter any ticker for live technical analysis, fundamentals and trade setup.")
@@ -2023,7 +2180,9 @@ if run or ticker_input:
 
 
 # ════════════════════════════════════════════════════════════════════════════════
-# OPTIONS DECISION HUB — 6-Panel Trade Analysis
+# OPTIONS DECISION HUB
+st.markdown('<div id="hub"></div>', unsafe_allow_html=True)
+# — 6-Panel Trade Analysis
 # ════════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="sec">🎰 Options Decision Hub — Full Signal Stack</div>', unsafe_allow_html=True)
 st.markdown('<div style="font-size:12px;color:#6b7280;margin-bottom:12px;">All signals combined to help you decide: what to trade, which strategy, where to enter, how much to risk.</div>', unsafe_allow_html=True)
@@ -2052,6 +2211,7 @@ hub_tickers = [t.strip().upper() for t in st.session_state.get("hub_tickers","NV
 account_size = st.session_state.get("account_size", 25000)
 
 # ── PANEL 2: WHAT'S MOVING & WHY ─────────────────────────────────────────────
+st.markdown('<div id="panel2"></div>', unsafe_allow_html=True)
 st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 8px;">Panel 2 - Price Volume Momentum</div>', unsafe_allow_html=True)
 
 @st.cache_data(ttl=300)
@@ -2112,6 +2272,7 @@ if moving_data:
             </div>""", unsafe_allow_html=True)
 
 # ── PANEL 3: IV RANK SCANNER ─────────────────────────────────────────────────
+st.markdown('<div id="panel3"></div>', unsafe_allow_html=True)
 st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 8px;">Panel 3 - IV Rank - Buy or Sell Options Premium?</div>', unsafe_allow_html=True)
 st.markdown('<div style="font-size:11px;color:#6b7280;margin-bottom:8px;">IVR under 30 = options CHEAP → BUY calls/puts &nbsp;·&nbsp; IVR 30-60 = NEUTRAL &nbsp;·&nbsp; IVR over 60 = options EXPENSIVE → SELL premium (CSP/CC)</div>', unsafe_allow_html=True)
 
@@ -2142,6 +2303,7 @@ if iv_data:
             </div>""", unsafe_allow_html=True)
 
 # ── PANEL 4: SMART MONEY ─────────────────────────────────────────────────────
+st.markdown('<div id="panel4"></div>', unsafe_allow_html=True)
 st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 8px;">Panel 4 - Smart Money Signals</div>', unsafe_allow_html=True)
 
 p4_c1, p4_c2, p4_c3 = st.columns(3)
@@ -2230,6 +2392,7 @@ if hub_si:
             </div>""", unsafe_allow_html=True)
 
 # ── PANEL 5: TECHNICAL SETUP ──────────────────────────────────────────────────
+st.markdown('<div id="panel5"></div>', unsafe_allow_html=True)
 st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 8px;">Panel 5 - Technical Setup - Strike Selection Guide</div>', unsafe_allow_html=True)
 st.markdown('<div style="font-size:11px;color:#6b7280;margin-bottom:8px;">Key levels for strike placement — support for CSP strikes, resistance for call spreads, ATR for stop placement.</div>', unsafe_allow_html=True)
 
@@ -2257,6 +2420,7 @@ if tech_data:
             </div>""", unsafe_allow_html=True)
 
 # ── PANEL 6: CLAUDE TRADE SYNTHESIS ──────────────────────────────────────────
+st.markdown('<div id="panel6"></div>', unsafe_allow_html=True)
 st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin:14px 0 8px;">Panel 6 - Claude Trade Synthesis - Full Trade Plans</div>', unsafe_allow_html=True)
 
 if ant_key:

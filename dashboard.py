@@ -67,9 +67,14 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 /* Sidebar nav */
 section[data-testid="stSidebar"]{background:#1e3a5f!important;min-width:220px!important;max-width:220px!important;}
 section[data-testid="stSidebar"] p,section[data-testid="stSidebar"] span,
-section[data-testid="stSidebar"] div,section[data-testid="stSidebar"] a{color:#e0eaff!important;}
-section[data-testid="stSidebar"] .stMarkdown a{color:#93c5fd!important;text-decoration:none!important;}
-section[data-testid="stSidebar"] .stMarkdown a:hover{color:#fff!important;}
+section[data-testid="stSidebar"] div{color:#ffffff!important;}
+section[data-testid="stSidebar"] .stMarkdown a{
+  color:#ffffff!important;text-decoration:none!important;
+  font-size:13px!important;font-weight:500!important;
+  display:block;padding:4px 2px;}
+section[data-testid="stSidebar"] .stMarkdown a:hover{
+  color:#93c5fd!important;}
+section[data-testid="stSidebar"] .stMarkdown strong{color:#93c5fd!important;font-size:11px!important;}
 section[data-testid="stSidebar"] hr{border-color:#2d5a8e!important;}
 </style>
 """, unsafe_allow_html=True)
@@ -1892,13 +1897,13 @@ with st.expander("⚙️ Add stocks to the scan universe"):
 st.markdown('<div id="sentiment"></div>', unsafe_allow_html=True)
 # & SMART MONEY
 # ════════════════════════════════════════════════════════════════════════════════
+fg_score=max(0,min(100,int(100-(vix_price-10)/35*100)))
 _fg_sig = "EXTREME GREED" if fg_score>=80 else "GREED" if fg_score>=65 else "NEUTRAL" if fg_score>=45 else "FEAR" if fg_score>=25 else "EXTREME FEAR"
 _fg_col = "#15803d" if fg_score>=65 else "#b91c1c" if fg_score<35 else "#d97706"
 _fg_bg  = "#f0fdf4" if fg_score>=65 else "#fef2f2" if fg_score<35 else "#fffbeb"
 _fg_bc  = "#bbf7d0" if fg_score>=65 else "#fecaca" if fg_score<35 else "#fde68a"
 st.markdown(f'<div class="sec">😱 Sentiment {section_signal("Fear/Greed",_fg_sig,_fg_col,_fg_bg,_fg_bc,f"Score {fg_score}")}</div>', unsafe_allow_html=True)
 
-fg_score=max(0,min(100,int(100-(vix_price-10)/35*100)))
 fg_lbl=("Extreme Greed" if fg_score>=80 else "Greed" if fg_score>=65 else "Neutral" if fg_score>=45 else "Fear" if fg_score>=25 else "Extreme Fear")
 fg_col="#16a34a" if fg_score>=65 else "#d97706" if fg_score>=45 else "#dc2626"
 

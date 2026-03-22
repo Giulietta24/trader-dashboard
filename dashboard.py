@@ -106,7 +106,7 @@ def section_signal(label: str, signal: str, col: str, bg: str, bc: str, detail: 
     return f'''<span style="background:{bg};border:1px solid {bc};color:{col};
       font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;
       margin-left:10px;vertical-align:middle;">{signal}</span>
-      <span style="font-size:11px;color:#6b7280;margin-left:6px;">{detail}</span>'''
+      <span style="font-size:11px;color:#6b7280;margin-left:6px;vertical-align:middle;">{detail}</span>'''
 
 def sig_badge(v, good_pos=True, labels=("BULLISH","BEARISH")):
     """Return (signal_text, col, bg, bc) based on value direction."""
@@ -165,7 +165,8 @@ def get_indexes():
             sma50=h["Close"].tail(50).mean()
             out[sym]={"color":col,"cap":cap,"name":name,"grp":grp,
                       "price":p,"chg1d":chg1d,"chg1w":chg1w,"chg1m":chg1m,"chg3m":chg3m,
-                      "above50":p>sma50,"spark":h["Close"].tail(30).tolist(),"hist":h}
+                      "above50":p>sma50,"sma50":float(sma50),
+                      "spark":h["Close"].tail(30).tolist(),"hist":h}
     return out
 
 @st.cache_data(ttl=300)
@@ -1017,6 +1018,43 @@ st.markdown(f"""
 
 st.markdown("---")
 
+# Badge legend — always visible, compact
+st.markdown("""
+<div style="background:#f0f4ff;border:2px solid #c7d2fe;border-radius:8px;padding:10px 14px;margin-bottom:14px;">
+  <div style="font-size:11px;font-weight:700;color:#3730a3;margin-bottom:8px;">🏷️ HOW TO READ THE SIGNAL BADGES ON EACH SECTION TITLE</div>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;white-space:nowrap;">BULLISH</span>
+      <span style="font-size:11px;color:#374151;">= Positive signal → favour <b>Long Calls</b> or <b>CSPs</b></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;white-space:nowrap;">BEARISH</span>
+      <span style="font-size:11px;color:#374151;">= Negative signal → favour <b>Long Puts</b> or sit on hands</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="background:#fffbeb;border:1px solid #fde68a;color:#d97706;font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;white-space:nowrap;">CAUTION</span>
+      <span style="font-size:11px;color:#374151;">= Mixed signals → be <b>selective</b>, wait for clearer setup</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="background:#f0fdf4;border:1px solid #bbf7d0;color:#15803d;font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;white-space:nowrap;">▲ Above 50DMA</span>
+      <span style="font-size:11px;color:#374151;">= Price above 50-day moving average = <b>uptrend</b></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;white-space:nowrap;">▼ Below 50DMA</span>
+      <span style="font-size:11px;color:#374151;">= Price below 50-day moving average = <b>downtrend</b></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;white-space:nowrap;">RISK ON</span>
+      <span style="font-size:11px;color:#374151;">= Market in bull mode → full position sizing OK</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;white-space:nowrap;">RISK OFF</span>
+      <span style="font-size:11px;color:#374151;">= Market defensive → reduce size, buy protection</span>
+    </div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 1 — MARKET REGIME
 st.markdown('<div id="regime"></div>', unsafe_allow_html=True)
@@ -1068,11 +1106,21 @@ for col,(label,val,vc,bg,desc) in zip(reg_cols, regime_items):
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 2 — INDEX COMPARISON
+# Signal: based on how many of the 4 cap-size indexes are above their 50DMA and trending up
 st.markdown('<div id="indexes"></div>', unsafe_allow_html=True)
 # ════════════════════════════════════════════════════════════════════════════════
-_spy_cls = "sec-bull" if spy_d.get("chg1m",0)>0 else "sec-bear"
-_spy_lbl = f"SPY {spy_d.get('chg1m',0):+.1f}% 1M"
-st.markdown(f'<div class="sec">📊 Index Comparison <span class="sec-badge {_spy_cls}">{_spy_lbl}</span></div>', unsafe_allow_html=True)
+_idx_syms = ["SPY","QQQ","IWM","MDY"]
+_idx_above50 = sum(1 for s in _idx_syms if idx.get(s,{}).get("above50",False))
+_idx_pos1m   = sum(1 for s in _idx_syms if idx.get(s,{}).get("chg1m",0)>0)
+_idx_score   = _idx_above50 + _idx_pos1m
+if _idx_score >= 6:
+    _idx_sig,_idx_col,_idx_bg,_idx_bc = "BULLISH","#15803d","#f0fdf4","#bbf7d0"
+elif _idx_score <= 2:
+    _idx_sig,_idx_col,_idx_bg,_idx_bc = "BEARISH","#b91c1c","#fef2f2","#fecaca"
+else:
+    _idx_sig,_idx_col,_idx_bg,_idx_bc = "MIXED","#d97706","#fffbeb","#fde68a"
+st.markdown(f'<div class="sec">📊 Index Comparison {section_signal("Indexes",_idx_sig,_idx_col,_idx_bg,_idx_bc,f"{_idx_above50}/4 above 50DMA")}</div>', unsafe_allow_html=True)
+st.markdown(f'<div style="font-size:11px;color:#6b7280;margin-bottom:6px;padding:6px 10px;background:#f9fafb;border-radius:6px;">SPY=large cap S&P 500 · RSP=equal weight (if RSP>SPY the rally is broad=healthy) · MDY=mid cap · IWM=small cap · DJI=mega cap blue chip · <b>{_idx_above50}/4 above 50-day moving average</b> — green badge=uptrend, red=downtrend</div>', unsafe_allow_html=True)
 
 INDEX_GROUPS = {
     "📐 Cap Size & Breadth": {
@@ -1112,7 +1160,8 @@ for group_name, group in INDEX_GROUPS.items():
                 sp = spark_html(d["spark"], d["color"])
                 tbg = "#f0fdf4" if d["above50"] else "#fef2f2"
                 ttc = "#15803d" if d["above50"] else "#b91c1c"
-                tlbl = "Above 50D" if d["above50"] else "Below 50D"
+                dma50_pct = round((d["price"] - d.get("sma50", d["price"])) / max(d.get("sma50", d["price"]), 1) * 100, 1) if d.get("sma50") else 0
+                tlbl = f"▲ {dma50_pct:+.1f}% vs 50DMA" if d["above50"] else f"▼ {dma50_pct:+.1f}% vs 50DMA"
                 tip_text = group["tips"].get(sym, d["name"])
                 st.markdown(f"""
                 <div class="card">
@@ -1192,7 +1241,8 @@ with chart_col2:
 st.markdown('<div id="cross"></div>', unsafe_allow_html=True)
 # RELATIONSHIPS
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🔗 Cross-Market Relationships <span class="sec-badge sec-neu">1D · 1W · 1M · 3M</span></div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">🔗 Cross-Market Relationships ' + section_signal("Cross","ROTATION TRACKER","#1d4ed8","#eff6ff","#bfdbfe","Use toggle below") + '</div>', unsafe_allow_html=True)
+st.markdown('<div style="font-size:11px;color:#6b7280;margin-bottom:6px;padding:6px 10px;background:#f9fafb;border-radius:6px;">Each card = one asset vs another over the selected period. <b>Green</b>=first asset outperforming (e.g. XLK/SPY green = tech beating market = risk-on). <b>Red</b>=second asset outperforming (e.g. XLP/XLY red = staples beating discretionary = defensive rotation = caution).</div>', unsafe_allow_html=True)
 cm_period = st.radio("Cross-market period", ["1D","1W","1M","3M"], horizontal=True, label_visibility="collapsed", key="cm_period_radio")
 
 with st.spinner("Loading cross-market data..."):

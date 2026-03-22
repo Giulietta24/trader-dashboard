@@ -32,7 +32,14 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 .block-container{padding:1rem 1.5rem 2rem;max-width:1600px;}
 /* sidebar enabled */
 .sec{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
-     color:#9ca3af;margin:1.4rem 0 .7rem;border-bottom:1px solid #e5e7eb;padding-bottom:5px;}
+     color:#9ca3af;margin:1.4rem 0 .7rem;border-bottom:1px solid #e5e7eb;padding-bottom:5px;
+     display:flex;align-items:center;justify-content:space-between;}
+.sec-badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;
+     letter-spacing:0;text-transform:none;border:1px solid;}
+.sec-bull{background:#f0fdf4;color:#15803d;border-color:#bbf7d0;}
+.sec-bear{background:#fef2f2;color:#b91c1c;border-color:#fecaca;}
+.sec-warn{background:#fffbeb;color:#b45309;border-color:#fde68a;}
+.sec-neu{background:#f9fafb;color:#6b7280;border-color:#e5e7eb;}
 .card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;}
 .lbl{font-size:10px;color:#9ca3af;letter-spacing:.04em;text-transform:uppercase;margin-bottom:4px;}
 .val{font-size:20px;font-weight:600;color:#111827;}
@@ -58,17 +65,12 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 .tw .tb::after{content:"";position:absolute;top:100%;right:12px;left:auto;
   margin:0;border:5px solid transparent;border-top-color:#1e293b;}
 /* Sidebar nav */
-section[data-testid="stSidebar"]{background:#111827!important;min-width:220px!important;max-width:220px!important;}
-section[data-testid="stSidebar"] *{color:#f1f5f9!important;}
-section[data-testid="stSidebar"] .stButton>button{
-  background:transparent!important;border:none!important;
-  color:#9ca3af!important;font-size:12px!important;
-  text-align:left!important;padding:6px 12px!important;
-  width:100%!important;border-radius:6px!important;}
-section[data-testid="stSidebar"] .stButton>button:hover{
-  background:#1f2937!important;color:#f1f5f9!important;}
-section[data-testid="stSidebar"] .stButton>button[kind="primary"]{
-  background:#2563eb!important;color:#fff!important;}
+section[data-testid="stSidebar"]{background:#1e3a5f!important;min-width:220px!important;max-width:220px!important;}
+section[data-testid="stSidebar"] p,section[data-testid="stSidebar"] span,
+section[data-testid="stSidebar"] div,section[data-testid="stSidebar"] a{color:#e0eaff!important;}
+section[data-testid="stSidebar"] .stMarkdown a{color:#93c5fd!important;text-decoration:none!important;}
+section[data-testid="stSidebar"] .stMarkdown a:hover{color:#fff!important;}
+section[data-testid="stSidebar"] hr{border-color:#2d5a8e!important;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -94,6 +96,21 @@ def verdict(s):
     if s>=50: return "HOLD","#fffbeb","#d97706"
     if s>=35: return "WEAK/AVOID","#fef2f2","#dc2626"
     return "STRONG SELL","#fef2f2","#b91c1c"
+def section_signal(label: str, signal: str, col: str, bg: str, bc: str, detail: str = "") -> str:
+    """Render a compact signal badge for section headers."""
+    return f'''<span style="background:{bg};border:1px solid {bc};color:{col};
+      font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px;
+      margin-left:10px;vertical-align:middle;">{signal}</span>
+      <span style="font-size:11px;color:#6b7280;margin-left:6px;">{detail}</span>'''
+
+def sig_badge(v, good_pos=True, labels=("BULLISH","BEARISH")):
+    """Return (signal_text, col, bg, bc) based on value direction."""
+    is_good = (v >= 0) if good_pos else (v <= 0)
+    if is_good:
+        return labels[0], "#15803d", "#f0fdf4", "#bbf7d0"
+    else:
+        return labels[1], "#b91c1c", "#fef2f2", "#fecaca"
+
 def spark_html(data, col="#2563eb", h=24):
     if not data: return ""
     mn,mx=min(data),max(data); rng=mx-mn or 1
@@ -877,7 +894,7 @@ with st.sidebar:
     st.markdown(f"""
     <div style="padding:12px 8px 4px;">
       <div style="font-size:15px;font-weight:700;color:#f1f5f9;margin-bottom:2px;">Trader Dashboard</div>
-      <div style="background:#1f2937;border-radius:6px;padding:8px 10px;margin:8px 0 12px;">
+      <div style="background:#0f2d4a;border-radius:6px;padding:8px 10px;margin:8px 0 12px;">
         <div style="font-size:9px;color:#6b7280;margin-bottom:2px;">REGIME</div>
         <div style="font-size:13px;font-weight:700;color:{regime_sc};">{regime_s}</div>
         <div style="font-size:10px;color:#6b7280;">VIX {vix_price:.1f} | SPY {spy_1m_s:+.1f}% 1M</div>
@@ -1000,7 +1017,8 @@ st.markdown("---")
 st.markdown('<div id="regime"></div>', unsafe_allow_html=True)
 # BAR
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🎯 Market Regime — Instant Read</div>', unsafe_allow_html=True)
+_reg_sig, _reg_col, _reg_bg, _reg_bc = ("RISK ON","#15803d","#f0fdf4","#bbf7d0") if vix_price<18 and spy_d.get("chg1m",0)>0 else ("RISK OFF","#b91c1c","#fef2f2","#fecaca") if vix_price>28 else ("CAUTION","#d97706","#fffbeb","#fde68a")
+st.markdown(f'<div class="sec">🎯 Market Regime {section_signal("Regime",_reg_sig,_reg_col,_reg_bg,_reg_bc,f"VIX {vix_price:.1f}")}</div>', unsafe_allow_html=True)
 
 spy_1m  = spy_d.get("chg1m",0)
 rsp_spy = breadth.get("rsp_spy",0)
@@ -1047,7 +1065,9 @@ for col,(label,val,vc,bg,desc) in zip(reg_cols, regime_items):
 # SECTION 2 — INDEX COMPARISON
 st.markdown('<div id="indexes"></div>', unsafe_allow_html=True)
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">📊 Index Comparison — Full Cap Size & Style Picture</div>', unsafe_allow_html=True)
+_spy_cls = "sec-bull" if spy_d.get("chg1m",0)>0 else "sec-bear"
+_spy_lbl = f"SPY {spy_d.get('chg1m',0):+.1f}% 1M"
+st.markdown(f'<div class="sec">📊 Index Comparison <span class="sec-badge {_spy_cls}">{_spy_lbl}</span></div>', unsafe_allow_html=True)
 
 INDEX_GROUPS = {
     "📐 Cap Size & Breadth": {
@@ -1167,7 +1187,7 @@ with chart_col2:
 st.markdown('<div id="cross"></div>', unsafe_allow_html=True)
 # RELATIONSHIPS
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🔗 Cross-Market Relationships</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">🔗 Cross-Market Relationships <span class="sec-badge sec-neu">1D · 1W · 1M · 3M</span></div>', unsafe_allow_html=True)
 cm_period = st.radio("Cross-market period", ["1D","1W","1M","3M"], horizontal=True, label_visibility="collapsed", key="cm_period_radio")
 
 with st.spinner("Loading cross-market data..."):
@@ -1201,7 +1221,10 @@ if cross:
 st.markdown('<div id="breadth"></div>', unsafe_allow_html=True)
 # & INTERNALS
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🩺 Market Breadth & Internals</div>', unsafe_allow_html=True)
+_br_rsp = breadth.get("rsp_spy",0)
+_br_sig, _br_col, _br_bg, _br_bc = sig_badge(_br_rsp)
+_br_lbl = "Broad rally" if _br_rsp>0 else "Narrow market"
+st.markdown(f'<div class="sec">🩺 Market Breadth & Internals {section_signal("Breadth",_br_sig,_br_col,_br_bg,_br_bc,_br_lbl)}</div>', unsafe_allow_html=True)
 
 @st.cache_data(ttl=300)
 def get_breadth_extended():
@@ -1410,7 +1433,9 @@ st.markdown(f"""
 # SECTION 5 — SECTOR HEATMAP
 st.markdown('<div id="sectors"></div>', unsafe_allow_html=True)
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🔥 Sector Momentum Heatmap</div>', unsafe_allow_html=True)
+_sec_avg = sum(v.get("1d",0) for v in sectors.values())/max(len(sectors),1) if sectors else 0
+_sec_sig, _sec_col, _sec_bg, _sec_bc = sig_badge(_sec_avg)
+st.markdown(f'<div class="sec">🔥 Sector Momentum {section_signal("Sectors",_sec_sig,_sec_col,_sec_bg,_sec_bc,f"avg {_sec_avg:+.1f}% today")}</div>', unsafe_allow_html=True)
 hp = st.radio("Period", ["1d","1w","1m"], horizontal=True, label_visibility="collapsed", key="sector_period")
 
 if sectors:
@@ -1432,7 +1457,12 @@ if sectors:
 # SECTION 6 — MARKET CONDITIONS
 st.markdown('<div id="conditions"></div>', unsafe_allow_html=True)
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🌐 Market Conditions — Rates · Volatility · FX</div>', unsafe_allow_html=True)
+_mc_vix_chg = macro.get("VIX",{}).get("chg",0)
+_mc_sig = "CALMING" if _mc_vix_chg < -0.5 else "RISING FEAR" if _mc_vix_chg > 0.5 else "STABLE"
+_mc_col = "#15803d" if _mc_vix_chg<-0.5 else "#b91c1c" if _mc_vix_chg>0.5 else "#6b7280"
+_mc_bg  = "#f0fdf4" if _mc_vix_chg<-0.5 else "#fef2f2" if _mc_vix_chg>0.5 else "#f9fafb"
+_mc_bc  = "#bbf7d0" if _mc_vix_chg<-0.5 else "#fecaca" if _mc_vix_chg>0.5 else "#e5e7eb"
+st.markdown(f'<div class="sec">🌐 Market Conditions {section_signal("Conditions",_mc_sig,_mc_col,_mc_bg,_mc_bc,f"VIX {_mc_vix_chg:+.1f}")}</div>', unsafe_allow_html=True)
 
 macro_tips={"VIX":"Fear index. Under 18=complacent. 18-25=caution. 25-35=fear. Over 35=panic. Rising fast=sell signal.",
             "10Y Yield":"10-year Treasury yield. Rising=inflation/growth fears, hurts growth stocks. Falling=recession fears, helps bonds.",
@@ -1470,10 +1500,14 @@ st.markdown(f'<div style="margin-top:6px;background:{"#f0fdf4" if spread>0 else 
 st.markdown('<div id="commodities"></div>', unsafe_allow_html=True)
 # & ENERGY
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🛢️ Commodities & Energy</div>', unsafe_allow_html=True)
-
 with st.spinner("Loading commodities..."):
     comms = get_commodities()
+_oil = comms.get("WTI Crude",{}).get("chg",0) if comms else 0
+_com_sig = "OIL RISING" if _oil>0.5 else "OIL FALLING" if _oil<-0.5 else "STABLE"
+_com_col = "#d97706" if _oil>0.5 else "#15803d" if _oil<-0.5 else "#6b7280"
+_com_bg  = "#fffbeb" if _oil>0.5 else "#f0fdf4" if _oil<-0.5 else "#f9fafb"
+_com_bc  = "#fde68a" if _oil>0.5 else "#bbf7d0" if _oil<-0.5 else "#e5e7eb"
+st.markdown(f'<div class="sec">🛢️ Commodities & Energy {section_signal("Commodities",_com_sig,_com_col,_com_bg,_com_bc,f"WTI {_oil:+.2f}%")}</div>', unsafe_allow_html=True)
 
 st.markdown('<div style="font-size:10px;color:#9ca3af;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-bottom:6px;">Market impact: ⭐⭐⭐ Whole market · ⭐⭐ Sector/inflation · ⭐ Company specific &nbsp;&nbsp; Hover ℹ on any card for detail</div>', unsafe_allow_html=True)
 
@@ -1509,7 +1543,7 @@ if comms:
 st.markdown('<div id="inflation"></div>', unsafe_allow_html=True)
 # SIGNALS
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">📈 Inflation Signals</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">📈 Inflation Signals ' + section_signal("Inflation","ABOVE TARGET","#b91c1c","#fef2f2","#fecaca","CPI >2% Fed target") + '</div>', unsafe_allow_html=True)
 
 with st.spinner("Loading inflation data (FRED)..."):
     fred = get_fred_inflation()
@@ -1593,7 +1627,7 @@ with inf_c3:
 st.markdown('<div id="themes"></div>', unsafe_allow_html=True)
 # SECTION 9 — OPTIONS THEME SCANNER (Fully Dynamic)
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🎯 Options Theme Scanner — What to Trade Today</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">🎯 Options Theme Scanner <span class="sec-badge sec-bull">Live · Refreshes daily</span></div>', unsafe_allow_html=True)
 
 # ── STEP 1: Scan 150 liquid stocks for real momentum (Yahoo Finance, free) ────
 # This is the ONLY thing hardcoded — the universe of stocks to scan.
@@ -1858,7 +1892,11 @@ with st.expander("⚙️ Add stocks to the scan universe"):
 st.markdown('<div id="sentiment"></div>', unsafe_allow_html=True)
 # & SMART MONEY
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">😱 Sentiment · Fear/Greed · Analyst Consensus · Insider Activity</div>', unsafe_allow_html=True)
+_fg_sig = "EXTREME GREED" if fg_score>=80 else "GREED" if fg_score>=65 else "NEUTRAL" if fg_score>=45 else "FEAR" if fg_score>=25 else "EXTREME FEAR"
+_fg_col = "#15803d" if fg_score>=65 else "#b91c1c" if fg_score<35 else "#d97706"
+_fg_bg  = "#f0fdf4" if fg_score>=65 else "#fef2f2" if fg_score<35 else "#fffbeb"
+_fg_bc  = "#bbf7d0" if fg_score>=65 else "#fecaca" if fg_score<35 else "#fde68a"
+st.markdown(f'<div class="sec">😱 Sentiment {section_signal("Fear/Greed",_fg_sig,_fg_col,_fg_bg,_fg_bc,f"Score {fg_score}")}</div>', unsafe_allow_html=True)
 
 fg_score=max(0,min(100,int(100-(vix_price-10)/35*100)))
 fg_lbl=("Extreme Greed" if fg_score>=80 else "Greed" if fg_score>=65 else "Neutral" if fg_score>=45 else "Fear" if fg_score>=25 else "Extreme Fear")
@@ -1958,7 +1996,9 @@ with sc4:
 st.markdown('<div id="aioptions"></div>', unsafe_allow_html=True)
 # FLOW
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🤖 AI Options Flow Analysis — Powered by Claude</div>', unsafe_allow_html=True)
+_ai_cls = "sec-bull" if ant_key else "sec-neu"
+_ai_lbl = "AI Active · 30min refresh" if ant_key else "Add Anthropic key"
+st.markdown(f'<div class="sec">🤖 AI Options Flow <span class="sec-badge {_ai_cls}">{_ai_lbl}</span></div>', unsafe_allow_html=True)
 
 if ant_key:
     sector_summary=", ".join([f"{k}:{v.get('1d',0):+.1f}%" for k,v in list((sectors or {}).items())[:5]])
@@ -1990,7 +2030,7 @@ else:
 st.markdown('<div id="calendar"></div>', unsafe_allow_html=True)
 # CALENDAR
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">📅 Catalyst Calendar</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">📅 Catalyst Calendar <span class="sec-badge sec-warn">High-impact events ahead</span></div>', unsafe_allow_html=True)
 
 today_d=date.today()
 all_macro=[
@@ -2036,7 +2076,7 @@ st.caption(earn_src)
 st.markdown('<div id="squeeze"></div>', unsafe_allow_html=True)
 # RADAR
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">💥 Short Squeeze Radar — Live (Yahoo Finance)</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">💥 Short Squeeze Radar ' + section_signal("Squeeze","WATCH","#d97706","#fffbeb","#fde68a","High SI stocks") + '</div>', unsafe_allow_html=True)
 
 sqz_watch=["SMCI","MSTR","GME","COIN","RIVN","SOFI","PLTR","BYND","TSLA","AMC","BBAI","SOUN"]
 with st.spinner("Loading short interest..."):
@@ -2079,7 +2119,7 @@ if sqz_data:
 # SECTION 14 — LIVE STOCK SCREENER
 st.markdown('<div id="screener"></div>', unsafe_allow_html=True)
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🔬 Live Stock Screener — Real-Time Signal Breakdown</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">🔬 Stock Screener <span class="sec-badge sec-neu">Enter any ticker</span></div>', unsafe_allow_html=True)
 st.markdown("Enter any ticker for live technical analysis, fundamentals and trade setup.")
 
 scr_c1,scr_c2=st.columns([2,3])
@@ -2187,7 +2227,7 @@ if run or ticker_input:
 st.markdown('<div id="hub"></div>', unsafe_allow_html=True)
 # — 6-Panel Trade Analysis
 # ════════════════════════════════════════════════════════════════════════════════
-st.markdown('<div class="sec">🎰 Options Decision Hub — Full Signal Stack</div>', unsafe_allow_html=True)
+st.markdown('<div class="sec">🎰 Options Decision Hub ' + section_signal("Hub","TRADE ANALYSIS","#1d4ed8","#eff6ff","#bfdbfe","All signals") + '</div>', unsafe_allow_html=True)
 st.markdown('<div style="font-size:12px;color:#6b7280;margin-bottom:12px;">All signals combined to help you decide: what to trade, which strategy, where to enter, how much to risk.</div>', unsafe_allow_html=True)
 
 # Account size setting

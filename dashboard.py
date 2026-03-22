@@ -1359,18 +1359,19 @@ for i,(label,val,vc,desc) in enumerate(rotation_metrics):
 bull_signals = []
 bear_signals = []
 checks = [
-    ("breadth_1m", True, "Broad market"),
-    ("credit_chg", True, "Credit healthy"),
-    ("small_vs_large", True, "Small caps leading"),
-    ("growth_vs_value", True, "Growth leading"),
-    ("highbeta_vs_lowvol", True, "Risk appetite high"),
-    ("cyclical_vs_def", True, "Cyclicals leading"),
-    ("banks_vs_utils", True, "Banks leading"),
-    ("copper_vs_gold", True, "Copper over gold"),
-    ("semis_vs_spy", True, "Semis leading"),
-    ("momentum_vs_minvol", True, "Momentum working"),
-    ("def_rotation", False, "Tech over defensives"),  # negative = bullish
+    ("breadth_1m",        True,  "Broad market"),
+    ("credit_chg",        True,  "Credit healthy"),
+    ("small_vs_large",    True,  "Small caps leading"),
+    ("growth_vs_value",   True,  "Growth leading"),
+    ("highbeta_vs_lowvol",True,  "Risk appetite high"),
+    ("cyclical_vs_def",   True,  "Cyclicals leading"),
+    ("banks_vs_utils",    True,  "Banks leading"),
+    ("copper_vs_gold",    True,  "Copper over gold"),
+    ("semis_vs_spy",      True,  "Semis leading"),
+    ("momentum_vs_minvol",True,  "Momentum working"),
 ]
+# Note: def_rotation removed — cyclical_vs_def already covers defensives theme
+# Every item in checks must have a visible card so count matches what user sees
 for key, pos_is_bull, label in checks:
     if key in bxt:
         val = bxt[key]
@@ -1381,24 +1382,26 @@ for key, pos_is_bull, label in checks:
 total = len(bull_signals) + len(bear_signals)
 bull_pct = int(len(bull_signals)/total*100) if total>0 else 50
 score_col = "#16a34a" if bull_pct>=65 else "#dc2626" if bull_pct<=35 else "#d97706"
-score_lbl = "Risk-On — majority of signals bullish" if bull_pct>=65 else "Risk-Off — majority of signals bearish" if bull_pct<=35 else "Mixed — no clear consensus"
+score_lbl = "RISK ON" if bull_pct>=65 else "RISK OFF" if bull_pct<=35 else "MIXED"
 score_bg = "#f0fdf4" if bull_pct>=65 else "#fef2f2" if bull_pct<=35 else "#fffbeb"
 score_bc = "#bbf7d0" if bull_pct>=65 else "#fecaca" if bull_pct<=35 else "#fde68a"
+score_desc = "Majority of signals bullish — favour longs and CSPs" if bull_pct>=65 else "Majority of signals bearish — favour puts and caution" if bull_pct<=35 else "No clear consensus — be selective, wait for clearer signals"
 
 st.markdown(f"""
-<div style="background:{score_bg};border:1px solid {score_bc};border-radius:8px;padding:12px 16px;margin-top:4px;">
+<div style="background:{score_bg};border:2px solid {score_bc};border-radius:8px;padding:12px 16px;margin-top:8px;">
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
     <div>
-      <span style="font-size:13px;font-weight:700;color:{score_col};">Overall Signal: {score_lbl}</span>
-      <span style="color:#9ca3af;font-size:11px;margin-left:8px;">{len(bull_signals)}/{total} indicators bullish ({bull_pct}%)</span>
+      <span style="font-size:20px;font-weight:700;color:{score_col};">{score_lbl}</span>
+      <span style="font-size:13px;color:#374151;margin-left:10px;">{len(bull_signals)} of {total} signals bullish</span>
     </div>
-    <div style="height:10px;width:200px;background:#e5e7eb;border-radius:5px;overflow:hidden;">
-      <div style="height:10px;width:{bull_pct}%;background:{score_col};border-radius:5px;"></div>
+    <div style="height:12px;width:200px;background:#e5e7eb;border-radius:6px;overflow:hidden;">
+      <div style="height:12px;width:{bull_pct}%;background:{score_col};border-radius:6px;"></div>
     </div>
   </div>
+  <div style="font-size:12px;color:#374151;margin-top:6px;font-weight:500;">{score_desc}</div>
   <div style="margin-top:8px;font-size:11px;color:#6b7280;">
-    <span style="color:#16a34a;font-weight:600;">Bullish:</span> {", ".join(bull_signals) if bull_signals else "None"} &nbsp;&nbsp;
-    <span style="color:#dc2626;font-weight:600;">Bearish:</span> {", ".join(bear_signals) if bear_signals else "None"}
+    <span style="color:#16a34a;font-weight:600;">Bullish ({len(bull_signals)}):</span> {", ".join(bull_signals) if bull_signals else "None"}<br>
+    <span style="color:#dc2626;font-weight:600;">Bearish ({len(bear_signals)}):</span> {", ".join(bear_signals) if bear_signals else "None"}
   </div>
 </div>""", unsafe_allow_html=True)
 

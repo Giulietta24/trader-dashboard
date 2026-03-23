@@ -1,7 +1,7 @@
 {
   "account_size": 25000,
   "credit_loaded": 5.0,
-  "watchlist": "NVDA,AAPL,META,MSFT,AMZN,TSLA,AMD,LLY,JPM,XOM",
+  "watchlist": "AAPL,META,MSFT,AMZN,TSLA,AMD,LLY,JPM,XOM",
   "total_spent": 0.0,
   "cost_log": []
 }

@@ -11,6 +11,96 @@ def _finnhub_key():
     try: return st.secrets.get("FINNHUB_KEY") or st.secrets.get("finnhub_key")
     except: return None
 
+def _secrets_default(key: str, fallback):
+    """Read a user setting from Streamlit secrets, fall back to default."""
+    try:
+        val = st.secrets.get(key)
+        if val is not None:
+            return type(fallback)(val)
+    except: pass
+    return fallback
+
+# ── PERSISTENT SETTINGS via GitHub JSON ───────────────────────────────────────
+SETTINGS_FILE = "user_settings.json"
+
+DEFAULT_SETTINGS = {
+    "account_size":  25000,
+    "watchlist":     ["NVDA","AAPL","META","MSFT","AMZN","TSLA","AMD","LLY","JPM","XOM"],
+    "credit_loaded": 5.0,
+    "total_spent":   0.0,
+    "cost_log":      [],   # last 50 entries kept
+}
+
+def _gh_headers():
+    try:
+        token = st.secrets.get("GITHUB_TOKEN")
+        if token:
+            return {"Authorization": f"token {token}",
+                    "Accept": "application/vnd.github.v3+json"}
+    except: pass
+    return None
+
+def _gh_repo():
+    try: return st.secrets.get("GITHUB_REPO","")
+    except: return ""
+
+def load_settings() -> dict:
+    """Load settings from GitHub. Falls back to defaults if not available."""
+    hdrs = _gh_headers()
+    repo = _gh_repo()
+    if not hdrs or not repo:
+        return dict(DEFAULT_SETTINGS)
+    try:
+        r = requests.get(
+            f"https://api.github.com/repos/{repo}/contents/{SETTINGS_FILE}",
+            headers=hdrs, timeout=8
+        )
+        if r.status_code == 200:
+            import base64
+            data = json.loads(base64.b64decode(r.json()["content"]).decode())
+            # Merge with defaults so new keys always exist
+            merged = dict(DEFAULT_SETTINGS)
+            merged.update(data)
+            return merged
+    except: pass
+    return dict(DEFAULT_SETTINGS)
+
+def save_settings(settings: dict) -> bool:
+    """Save settings to GitHub JSON file. Returns True on success."""
+    hdrs = _gh_headers()
+    repo = _gh_repo()
+    if not hdrs or not repo:
+        return False
+    try:
+        import base64
+        # Get current SHA (needed to update existing file)
+        r = requests.get(
+            f"https://api.github.com/repos/{repo}/contents/{SETTINGS_FILE}",
+            headers=hdrs, timeout=8
+        )
+        sha = r.json().get("sha") if r.status_code == 200 else None
+        content_b64 = base64.b64encode(
+            json.dumps(settings, indent=2).encode()
+        ).decode()
+        payload = {
+            "message": f"Update settings {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "content": content_b64,
+        }
+        if sha:
+            payload["sha"] = sha
+        r2 = requests.put(
+            f"https://api.github.com/repos/{repo}/contents/{SETTINGS_FILE}",
+            headers=hdrs, json=payload, timeout=10
+        )
+        return r2.status_code in (200, 201)
+    except: return False
+
+def update_setting(key: str, value) -> bool:
+    """Load, update one key, save back."""
+    s = load_settings()
+    s[key] = value
+    return save_settings(s)
+
 def _anthropic_key():
     try: return st.secrets.get("ANTHROPIC_API_KEY") or st.secrets.get("anthropic_api_key")
     except: return None
@@ -23,6 +113,128 @@ st.set_page_config(page_title="Trader Intelligence Dashboard", page_icon="📊",
 if "custom_tickers"  not in st.session_state: st.session_state.custom_tickers  = {}
 if "approved_recs"   not in st.session_state: st.session_state.approved_recs   = {}
 if "hidden_themes"   not in st.session_state: st.session_state.hidden_themes   = []
+
+# ── PERSISTENT STORES (survive app restarts via /tmp/ file) ───────────────────
+import os, pathlib, base64
+
+_COST_FILE  = pathlib.Path("/tmp/trader_dash_costs.json")
+_PREFS_FILE = pathlib.Path("/tmp/trader_dash_prefs.json")
+_GH_FILE    = "user_settings.json"   # file stored in your GitHub repo
+
+# ── GitHub helpers ─────────────────────────────────────────────────────────────
+def _gh_token():
+    try: return st.secrets.get("GITHUB_TOKEN","")
+    except: return ""
+
+def _gh_repo():
+    try: return st.secrets.get("GITHUB_REPO","")
+    except: return ""
+
+def _gh_headers():
+    t = _gh_token()
+    if t: return {"Authorization":f"token {t}","Accept":"application/vnd.github.v3+json"}
+    return None
+
+def _gh_read() -> dict:
+    """Read user_settings.json from GitHub repo."""
+    hdrs = _gh_headers(); repo = _gh_repo()
+    if not hdrs or not repo: return {}
+    try:
+        r = requests.get(f"https://api.github.com/repos/{repo}/contents/{_GH_FILE}",
+                         headers=hdrs, timeout=8)
+        if r.status_code == 200:
+            return json.loads(base64.b64decode(r.json()["content"]).decode())
+    except: pass
+    return {}
+
+def _gh_write(data: dict) -> bool:
+    """Write user_settings.json to GitHub repo."""
+    hdrs = _gh_headers(); repo = _gh_repo()
+    if not hdrs or not repo: return False
+    try:
+        # Get SHA of existing file (needed for update)
+        r = requests.get(f"https://api.github.com/repos/{repo}/contents/{_GH_FILE}",
+                         headers=hdrs, timeout=8)
+        sha = r.json().get("sha") if r.status_code == 200 else None
+        payload = {
+            "message": f"Dashboard settings {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "content": base64.b64encode(json.dumps(data, indent=2).encode()).decode(),
+        }
+        if sha: payload["sha"] = sha
+        r2 = requests.put(f"https://api.github.com/repos/{repo}/contents/{_GH_FILE}",
+                          headers=hdrs, json=payload, timeout=10)
+        return r2.status_code in (200, 201)
+    except: return False
+
+# ── Defaults ───────────────────────────────────────────────────────────────────
+_DEFAULT_PREFS = {
+    "account_size":  25000,
+    "credit_loaded": 5.0,
+    "watchlist":     "NVDA,AAPL,META,MSFT,AMZN,TSLA,AMD,LLY,JPM,XOM",
+    "total_spent":   0.0,
+    "cost_log":      [],
+}
+
+def _load_cost_store() -> dict:
+    try:
+        if _COST_FILE.exists():
+            return json.loads(_COST_FILE.read_text())
+    except: pass
+    return {"total_spent": 0.0, "credit_loaded": 5.0, "log": []}
+
+def _save_cost_store(store: dict):
+    try: _COST_FILE.write_text(json.dumps(store))
+    except: pass
+
+def _load_prefs() -> dict:
+    """
+    Load priority: GitHub (persistent) → /tmp/ cache → Streamlit secrets → defaults.
+    Also caches GitHub data to /tmp/ for speed on reruns.
+    """
+    # 1. Try GitHub (true persistence)
+    gh_data = _gh_read()
+    if gh_data:
+        try: _PREFS_FILE.write_text(json.dumps(gh_data))  # cache locally
+        except: pass
+        merged = dict(_DEFAULT_PREFS)
+        merged.update(gh_data)
+        return merged
+
+    # 2. Try /tmp/ cache (fast, persists within session)
+    try:
+        if _PREFS_FILE.exists():
+            data = json.loads(_PREFS_FILE.read_text())
+            if data: return data
+    except: pass
+
+    # 3. Try Streamlit secrets (manual one-time setup)
+    try:
+        return {
+            "account_size":  int(st.secrets.get("ACCOUNT_SIZE", 25000)),
+            "credit_loaded": float(st.secrets.get("CREDIT_LOADED", 5.0)),
+            "watchlist":     str(st.secrets.get("WATCHLIST","NVDA,AAPL,META,MSFT,AMZN,TSLA,AMD,LLY,JPM,XOM")),
+            "total_spent":   0.0,
+            "cost_log":      [],
+        }
+    except: pass
+
+    return dict(_DEFAULT_PREFS)
+
+def _save_prefs(prefs: dict):
+    """
+    Save to /tmp/ immediately (fast) AND to GitHub (persistent).
+    GitHub write happens in background — /tmp/ ensures instant UI update.
+    """
+    try: _PREFS_FILE.write_text(json.dumps(prefs))
+    except: pass
+    _gh_write(prefs)   # persist to GitHub
+
+if "cost_store" not in st.session_state:
+    st.session_state.cost_store = _load_cost_store()
+if "ai_cost_log" not in st.session_state: st.session_state.ai_cost_log = []
+if "total_cost"  not in st.session_state: st.session_state.total_cost  = 0.0
+if "prefs"       not in st.session_state:
+    st.session_state.prefs = _load_prefs()
 
 # ── CSS ────────────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -84,6 +296,7 @@ section[data-testid="stSidebar"] hr{border-color:#2d5a8e!important;}
 if "custom_tickers"  not in st.session_state: st.session_state.custom_tickers  = {}
 if "approved_recs"   not in st.session_state: st.session_state.approved_recs   = {}
 if "hidden_themes"   not in st.session_state: st.session_state.hidden_themes   = []
+
 if "heat_period"     not in st.session_state: st.session_state.heat_period     = "1d"
 def clr(v, good_pos=True):
     return ("#16a34a" if v>=0 else "#dc2626") if good_pos else ("#dc2626" if v>=0 else "#16a34a")
@@ -101,6 +314,77 @@ def verdict(s):
     if s>=50: return "HOLD","#fffbeb","#d97706"
     if s>=35: return "WEAK/AVOID","#fef2f2","#dc2626"
     return "STRONG SELL","#fef2f2","#b91c1c"
+# Haiku pricing: $0.80/M input, $4/M output
+# Sonnet pricing: $3/M input, $15/M output
+HAIKU_IN  = 0.80  / 1_000_000
+HAIKU_OUT = 4.00  / 1_000_000
+SONNET_IN = 3.00  / 1_000_000
+SONNET_OUT= 15.00 / 1_000_000
+
+def _load_persistent_costs() -> dict:
+    """Load cumulative costs from Streamlit persistent storage."""
+    try:
+        import streamlit as _st
+        raw = _st.context.headers  # trigger context
+        data = _st.experimental_get_query_params()  # not used, just available
+    except: pass
+    try:
+        stored = st.session_state.get("_persistent_costs_loaded", False)
+        if not stored:
+            # Try to load from storage artifact
+            try:
+                import json as _json
+                val = st.session_state.get("_costs_store", None)
+                if val:
+                    return _json.loads(val)
+            except: pass
+        return st.session_state.get("_costs_data", {
+            "total_ever": 0.0,
+            "credit_loaded": 5.0,
+            "log": [],
+            "last_reset": datetime.now().strftime("%Y-%m-%d"),
+        })
+    except:
+        return {"total_ever":0.0,"credit_loaded":5.0,"log":[],"last_reset":""}
+
+def _save_persistent_costs(data: dict):
+    """Save to session state (persists within session, best effort across sessions)."""
+    try:
+        import json as _json
+        st.session_state["_costs_data"] = data
+        st.session_state["_costs_store"] = _json.dumps(data)
+    except: pass
+
+def track_cost(fn_name: str, tokens_in: int, tokens_out: int, model: str = "haiku"):
+    """Log an API call cost — persists across the session."""
+    rate_in  = HAIKU_IN  if model == "haiku" else SONNET_IN
+    rate_out = HAIKU_OUT if model == "haiku" else SONNET_OUT
+    cost = tokens_in * rate_in + tokens_out * rate_out
+
+    # Update session log
+    entry = {"fn": fn_name, "in": tokens_in, "out": tokens_out,
+             "cost": cost, "ts": datetime.now().strftime("%H:%M:%S"),
+             "date": datetime.now().strftime("%Y-%m-%d"), "model": model}
+    st.session_state.ai_cost_log.append(entry)
+    st.session_state.total_cost = sum(e["cost"] for e in st.session_state.ai_cost_log)
+
+    # Update persistent store
+    data = _load_persistent_costs()
+    data["total_ever"] = data.get("total_ever", 0.0) + cost
+    data["log"] = (data.get("log", []) + [entry])[-50:]  # keep last 50
+    _save_persistent_costs(data)
+    return cost
+
+# Estimated token counts per function (conservative estimates)
+COST_ESTIMATES = {
+    "index_summary":    (200, 120, "haiku"),
+    "cross_summary":    (200, 120, "haiku"),
+    "options_analysis": (300, 250, "haiku"),
+    "options_themes":   (800, 600, "haiku"),
+    "trade_plans":      (1500, 1200, "sonnet"),
+    "dynamic_themes":   (600, 400, "haiku"),
+}
+
 def section_signal(label: str, signal: str, col: str, bg: str, bc: str, detail: str = "") -> str:
     """Render a compact signal badge for section headers."""
     return f'''<span style="background:{bg};border:1px solid {bc};color:{col};
@@ -838,13 +1122,83 @@ Risk per trade: max 5% = ${account_size*0.05:,.0f}"""
                   "messages": [{"role": "user", "content": prompt}]},
             timeout=45
         )
-        text = r.json().get("content", [{}])[0].get("text", "").strip()
+        data = r.json()
+        text = data.get("content", [{}])[0].get("text", "").strip()
+        use  = data.get("usage",{})
+        track_cost("trade_plans", use.get("input_tokens",1500), use.get("output_tokens",1200), "sonnet")
         if text.startswith("```"):
             text = "\n".join(text.split("\n")[1:])
             if text.endswith("```"): text = text[:-3]
         return json.loads(text.strip())
     except Exception as e:
         return {}
+
+@st.cache_data(ttl=1800)
+def get_section_summary(section: str, data_summary: str, vix: float, date_str: str) -> str:
+    """Claude writes a plain English summary of what a section's data means for traders."""
+    key = _anthropic_key()
+    if not key: return ""
+    try:
+        prompts = {
+            "indexes": f"""You are a market analyst. Today {date_str}, VIX={vix:.1f}.
+Index data: {data_summary}
+Write 2-3 SHORT sentences (max 60 words total) explaining:
+1. What the index performance pattern means (breadth, leadership, rotation)
+2. What this means for options traders RIGHT NOW (buy calls/puts/CSPs?)
+Be direct. No jargon. Plain English.""",
+            "cross": f"""You are a market analyst. Today {date_str}, VIX={vix:.1f}.
+Cross-market rotation data: {data_summary}
+Write 2-3 SHORT sentences (max 60 words total) explaining:
+1. What the rotation pattern tells us about market regime
+2. Which sectors/assets traders should focus on today
+3. Any warning signals or confirmation of trend
+Be direct. No jargon. Plain English.""",
+        }
+        prompt = prompts.get(section, "")
+        if not prompt: return ""
+        r = requests.post("https://api.anthropic.com/v1/messages",
+            headers={"x-api-key":key,"anthropic-version":"2023-06-01","content-type":"application/json"},
+            json={"model":"claude-haiku-4-5-20251001","max_tokens":150,
+                  "messages":[{"role":"user","content":prompt}]},
+            timeout=15)
+        data = r.json()
+        text = data.get("content",[{}])[0].get("text","").strip()
+        use  = data.get("usage",{})
+        track_cost(f"summary_{section}", use.get("input_tokens",200), use.get("output_tokens",80))
+        return text
+    except: return ""
+
+@st.cache_data(ttl=3600)
+def get_index_rotation_summary(index_data: str, cross_data: str,
+                                vix: float, spy_1m: float, date_str: str) -> str:
+    """Claude explains what index and rotation data means in plain English."""
+    key = _anthropic_key()
+    if not key: return ""
+    try:
+        prompt = f"""You are a professional market analyst. Today is {date_str}.
+VIX: {vix:.1f} | SPY 1-month: {spy_1m:+.1f}%
+
+INDEX PERFORMANCE (1-month %):
+{index_data}
+
+CROSS-MARKET ROTATION (1-month ratio changes):
+{cross_data}
+
+Write a 3-4 sentence plain English summary that:
+1. States clearly what the indexes are doing (are large caps leading small caps? Is tech leading or lagging?)
+2. Explains what the rotation signals show (where is money moving TO and FROM?)
+3. Gives one clear conclusion about what this means for options traders today
+
+Be direct and specific. No bullet points. No jargon without explanation. Write as if talking to someone who trades but doesn't watch markets all day."""
+
+        r = requests.post("https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 200,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=15)
+        return r.json().get("content", [{}])[0].get("text", "").strip()
+    except: return ""
 
 @st.cache_data(ttl=1800)
 def get_ai_options_analysis(spy_chg,qqq_chg,vix,spy_1m,qqq_1m,iwm_1m,sector_summary):
@@ -940,7 +1294,82 @@ with st.sidebar:
         st.markdown(f'<a href="#{anchor}" style="display:block;padding:4px 0;font-size:12px;color:#9ca3af;text-decoration:none;">{label}</a>', unsafe_allow_html=True)
 
     st.markdown("---")
-    st.caption(f"{'Finnhub live' if fh_key else 'No Finnhub key'} | {'AI active' if ant_key else 'No AI key'}")
+
+    # ── Cost tracker ──────────────────────────────────────────────────────────
+    # Load persistent cost data
+    _costs = _load_persistent_costs()
+    total_ever    = _costs.get("total_ever", 0.0)
+    all_log       = _costs.get("log", [])
+    session_total = st.session_state.total_cost
+    session_log   = st.session_state.ai_cost_log
+
+    # Credit loaded — persists in storage
+    credit_loaded = st.number_input(
+        "Credit loaded ($)",
+        min_value=0.0, max_value=1000.0,
+        value=float(_costs.get("credit_loaded", 5.0)),
+        step=1.0, format="%.2f",
+        key="credit_input",
+        help="Enter how much credit you added at console.anthropic.com"
+    )
+    if credit_loaded != _costs.get("credit_loaded", 5.0):
+        _costs["credit_loaded"] = credit_loaded
+        _save_persistent_costs(_costs)
+
+    remaining = max(0.0, credit_loaded - total_ever)
+    pct_used  = min(100, int(total_ever / max(credit_loaded, 0.01) * 100))
+    months_left = credit_loaded / max(1.0/12, 1.0/12)  # ~$1/month
+
+    cost_col = "#4ade80" if session_total < 0.01 else "#fbbf24" if session_total < 0.05 else "#f87171"
+    rem_col  = "#4ade80" if remaining > credit_loaded*0.5 else "#fbbf24" if remaining > credit_loaded*0.2 else "#f87171"
+    months_remaining = int(remaining / max(1.0, 0.001))  # $1/month
+
+    st.markdown(f"""
+    <div style="padding:0 4px;">
+      <div style="font-size:10px;color:#93c5fd;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-bottom:5px;">💰 AI Cost Tracker</div>
+
+      <div style="background:#0f2d4a;border-radius:6px;padding:8px 10px;margin-bottom:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:6px;">
+          <div>
+            <div style="font-size:10px;color:#93c5fd;margin-bottom:1px;">Total spent</div>
+            <div style="font-size:18px;font-weight:700;color:{cost_col};">${total_ever:.4f}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-size:10px;color:#93c5fd;margin-bottom:1px;">Remaining</div>
+            <div style="font-size:18px;font-weight:700;color:{rem_col};">${remaining:.2f}</div>
+      </div>
+      <div style="background:#0f2d4a;border-radius:6px;padding:6px 10px;margin-bottom:6px;">
+        <div style="font-size:10px;color:#93c5fd;margin-bottom:2px;">All-time total spent</div>
+        <div style="font-size:15px;font-weight:700;color:#f87171;">${total_spent:.4f}</div>
+          </div>
+        </div>
+        <div style="height:6px;background:#1e3a5f;border-radius:3px;overflow:hidden;margin-bottom:4px;">
+          <div style="height:6px;width:{pct_used}%;background:{rem_col if pct_used<80 else "#f87171"};border-radius:3px;"></div>
+        </div>
+        <div style="font-size:10px;color:#93c5fd;">{pct_used}% of ${credit_loaded:.2f} used</div>
+      </div>
+
+      <div style="font-size:10px;color:#6b7280;line-height:1.7;">
+        This session: ${session_total:.4f} ({len(session_log)} calls)<br>
+        All time: {len(all_log)} calls tracked<br>
+        Est. ~$1/month · ~{int(remaining)} months left<br>
+        <a href="https://console.anthropic.com/settings/billing" target="_blank"
+           style="color:#93c5fd;text-decoration:none;">Top up at Anthropic ↗</a>
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    if all_log:
+        st.markdown('<div style="font-size:10px;color:#93c5fd;margin:8px 4px 3px;font-weight:600;">Recent calls:</div>', unsafe_allow_html=True)
+        for entry in reversed(all_log[-4:]):
+            st.markdown(f'<div style="font-size:10px;color:#e0eaff;padding:1px 4px;">{entry.get("date","")[-5:]} {entry["ts"][:5]} {entry["fn"]}<br><span style="color:#4ade80;">${entry["cost"]:.5f}</span></div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+    _gh_ok = bool(_gh_token() and _gh_repo())
+    st.markdown(f'''<div style="padding:0 4px;font-size:10px;color:#4b5563;line-height:1.8;">
+      {"✅ Finnhub live" if fh_key else "⚠️ No Finnhub key"}<br>
+      {"✅ AI active" if ant_key else "⚠️ No AI key"}<br>
+      {"✅ GitHub: settings saved" if _gh_ok else "⚠️ No GitHub: add token"}
+    </div>''', unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
 # HEADER
@@ -1236,6 +1665,71 @@ with chart_col2:
         yaxis=dict(gridcolor="#f3f4f6",ticksuffix="%"),hovermode="x unified")
     st.plotly_chart(fig2, use_container_width=True, config={"displayModeBar":False}, key="chart_style_risk")
 
+# Claude index summary
+if ant_key and idx:
+    _idx_lines = []
+    for _sym in ["SPY","RSP","MDY","IWM","QQQ","SOXX","EFA","EEM","BTC-USD"]:
+        _d = idx.get(_sym)
+        if _d: _idx_lines.append(f"{_sym}: 1D={_d['chg1d']:+.2f}% 1M={_d['chg1m']:+.1f}% 3M={_d['chg3m']:+.1f}%")
+    with st.spinner("Claude analysing index picture..."):
+        _idx_summary = get_index_rotation_summary(
+            "\n".join(_idx_lines), "",
+            vix_price, spy_d.get("chg1m",0), today_str
+        )
+    if _idx_summary:
+        st.markdown(f"""
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 16px;margin:8px 0;">
+          <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:6px;">🤖 INDEX PICTURE — What this means for your trades today (Claude · cached 1hr)</div>
+          <div style="font-size:13px;color:#1e3a5f;line-height:1.7;">{_idx_summary}</div>
+        </div>""", unsafe_allow_html=True)
+
+
+# Index summary
+_idx_summary_data = []
+for sym in ["SPY","RSP","QQQ","SOXX","IWM","EFA","EEM","BTC-USD"]:
+    d = idx.get(sym)
+    if d:
+        _idx_summary_data.append(f"{sym}: 1D={d.get('chg1d',0):+.1f}% 1M={d.get('chg1m',0):+.1f}%")
+_idx_data_str = " | ".join(_idx_summary_data)
+_idx_rsp = idx.get("RSP",{}).get("chg1m",0)
+_idx_spy = idx.get("SPY",{}).get("chg1m",0)
+_idx_soxx= idx.get("SOXX",{}).get("chg1m",0)
+_idx_eem = idx.get("EEM",{}).get("chg1m",0)
+
+if ant_key:
+    with st.spinner("Claude reading index data..."):
+        _idx_ai = get_section_summary("indexes", _idx_data_str, vix_price, today_str)
+else:
+    # Rule-based fallback summary
+    _breadth_ok = (_idx_rsp - _idx_spy) > 0
+    _tech_leading = _idx_soxx > _idx_spy
+    _intl_leading = _idx_eem > _idx_spy
+    _parts = []
+    if _breadth_ok:
+        _parts.append("Rally is broad-based — equal weight (RSP) beating cap weight (SPY), healthy sign")
+    else:
+        _parts.append("Rally is narrow — only mega caps moving, equal weight lagging, caution signal")
+    if _tech_leading:
+        _parts.append("Semis leading = risk-on, AI trade intact, favour Long Calls on tech")
+    else:
+        _parts.append("Semis lagging SPY = tech rotation risk, be selective on tech calls")
+    if _intl_leading:
+        _parts.append("Emerging markets outperforming = dollar weakening, global risk-on")
+    _idx_ai = ". ".join(_parts) + "."
+
+if _idx_ai:
+    _idx_sig_col = "#15803d" if (_idx_rsp-_idx_spy)>0 else "#b91c1c"
+    _idx_sig_bg  = "#f0fdf4" if (_idx_rsp-_idx_spy)>0 else "#fef2f2"
+    _idx_sig_bc  = "#bbf7d0" if (_idx_rsp-_idx_spy)>0 else "#fecaca"
+    st.markdown(f"""
+    <div style="background:{_idx_sig_bg};border:1px solid {_idx_sig_bc};border-radius:8px;padding:12px 16px;margin:8px 0;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="font-size:12px;font-weight:700;color:{_idx_sig_col};">📊 What the indexes are saying</span>
+        <span style="font-size:10px;color:#9ca3af;">{"🤖 Claude · " if ant_key else "📐 Rule-based · "}{today_str}</span>
+      </div>
+      <div style="font-size:13px;color:#374151;line-height:1.7;">{_idx_ai}</div>
+    </div>""", unsafe_allow_html=True)
+
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 3 — CROSS-MARKET
 st.markdown('<div id="cross"></div>', unsafe_allow_html=True)
@@ -1270,6 +1764,40 @@ if cross:
               <div style="font-size:9px;color:#9ca3af;">{d['label']}</div>
             </div>""", unsafe_allow_html=True)
     st.caption("1D/1W/1M/3M ratio change · Green=first asset outperforming · Red=second asset outperforming · Hover ℹ for what it means · Default: 1D")
+
+    # Cross-market summary
+    if cross:
+        _period_key = {"1D":"chg_1d","1W":"chg_1w","1M":"chg_1m","3M":"chg_3m"}.get(cm_period,"chg_1d")
+        _cross_lines = [f"{k}: {d.get(_period_key,0):+.1f}%" for k,d in cross.items()]
+        _cross_str   = " | ".join(_cross_lines)
+        # Key signals
+        _xlk_spy = cross.get("XLK/SPY",{}).get(_period_key,0)
+        _xlp_xly = cross.get("XLP/XLY",{}).get(_period_key,0)
+        _hyg_lqd = cross.get("HYG/LQD",{}).get(_period_key,0) if "HYG/LQD" in cross else 0
+        _tlt_spy = cross.get("TLT/SPY",{}).get(_period_key,0)
+        _iwm_spy = cross.get("IWM/SPY",{}).get(_period_key,0)
+
+        if ant_key:
+            with st.spinner("Claude reading rotation signals..."):
+                _cross_ai = get_section_summary("cross", _cross_str, vix_price, today_str)
+        else:
+            # Rule-based fallback
+            _c_parts = []
+
+# Claude rotation summary
+if ant_key and cross:
+    _cross_lines = [f"{_ck} ({_cv['label']}): {_cv.get('chg_1m',0):+.2f}% 1M" for _ck, _cv in cross.items()]
+    with st.spinner("Claude analysing rotation signals..."):
+        _rot_summary = get_index_rotation_summary(
+            "", "\n".join(_cross_lines),
+            vix_price, spy_d.get("chg1m",0), today_str
+        )
+    if _rot_summary:
+        st.markdown(f"""
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 16px;margin:8px 0;">
+          <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:6px;">🤖 ROTATION PICTURE — Where money is moving and what it means (Claude · cached 1hr)</div>
+          <div style="font-size:13px;color:#1e3a5f;line-height:1.7;">{_rot_summary}</div>
+        </div>""", unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 4 — BREADTH
@@ -2287,25 +2815,57 @@ st.markdown('<div style="font-size:12px;color:#6b7280;margin-bottom:12px;">All s
 
 # Account size setting
 with st.expander("⚙️ Account Settings", expanded=False):
+    _gh_connected = bool(_gh_token() and _gh_repo())
+    if _gh_connected:
+        st.markdown('<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;padding:7px 12px;margin-bottom:10px;font-size:11px;color:#15803d;">✅ GitHub connected — all changes save permanently to your repo and persist forever</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('''<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:7px 12px;margin-bottom:10px;font-size:11px;color:#854d0e;">
+          ⚠️ Not connected to GitHub — settings reset when app restarts.<br>
+          Add to Streamlit secrets: <code>GITHUB_TOKEN = "ghp_xxx"</code> and <code>GITHUB_REPO = "username/trader-dashboard"</code>
+        </div>''', unsafe_allow_html=True)
+    _prefs = st.session_state.prefs
     acct_col1, acct_col2 = st.columns([2,4])
     with acct_col1:
-        account_size = st.number_input(
-            "Your trading account size ($)",
-            min_value=1000, max_value=10000000,
-            value=st.session_state.get("account_size", 25000),
-            step=1000, format="%d"
-        )
-        st.session_state["account_size"] = account_size
-        st.caption(f"Max risk per trade: ${account_size*0.05:,.0f} (5%) · Conservative: ${account_size*0.02:,.0f} (2%)")
-    with acct_col2:
-        scan_tickers_input = st.text_input(
-            "Stocks to analyse (comma separated — leave blank for auto top movers)",
-            value=st.session_state.get("hub_tickers","NVDA,AAPL,META,MSFT,AMZN,TSLA,AMD,LLY,JPM,XOM"),
-            key="hub_ticker_input"
-        )
-        st.session_state["hub_tickers"] = scan_tickers_input
+        account_size = st.number_input("Account size ($)", min_value=1000, max_value=10000000,
+            value=int(_prefs.get("account_size",25000)), step=1000, format="%d", key="acct_size_input")
+        if account_size != _prefs.get("account_size"):
+            _prefs["account_size"] = account_size; st.session_state.prefs = _prefs; _save_prefs(_prefs)
+        st.caption(f"Max risk/trade: ${account_size*0.05:,.0f} (5%) · Safe: ${account_size*0.02:,.0f} (2%)")
 
-hub_tickers = [t.strip().upper() for t in st.session_state.get("hub_tickers","NVDA,AAPL,META,MSFT,AMZN,TSLA,AMD,LLY,JPM,XOM").split(",") if t.strip()][:15]
+        credit_loaded = st.number_input("Anthropic credit loaded ($)", min_value=0.0, max_value=1000.0,
+            value=float(_prefs.get("credit_loaded",5.0)), step=1.0, format="%.2f", key="credit_size_input")
+        if credit_loaded != _prefs.get("credit_loaded"):
+            _prefs["credit_loaded"] = credit_loaded; st.session_state.prefs = _prefs; _save_prefs(_prefs)
+
+    with acct_col2:
+        st.markdown("**Your watchlist — click ✕ to remove, type below to add**")
+        _raw = _prefs.get("watchlist","NVDA,AAPL,META,MSFT,AMZN,TSLA,AMD,LLY,JPM,XOM")
+        _watchlist = [t.strip().upper() for t in (_raw if isinstance(_raw,str) else ",".join(_raw)).split(",") if t.strip()]
+        wa1, wa2 = st.columns([3,1])
+        with wa1:
+            new_tick = st.text_input("Add ticker(s)", placeholder="e.g. NVDA, CCJ",
+                                      key="add_watch_tick", label_visibility="collapsed")
+        with wa2:
+            if st.button("➕ Add", key="add_watch_btn"):
+                for tk in [t.strip().upper() for t in new_tick.split(",") if t.strip()]:
+                    if tk and tk not in _watchlist: _watchlist.append(tk)
+                _prefs["watchlist"] = ",".join(_watchlist)
+                st.session_state.prefs = _prefs; _save_prefs(_prefs); st.rerun()
+        if _watchlist:
+            st.markdown(f'<div style="font-size:11px;color:#6b7280;margin:6px 0;">{len(_watchlist)} stocks:</div>', unsafe_allow_html=True)
+            for i in range(0, len(_watchlist), 5):
+                rcols = st.columns(5)
+                for col, tk in zip(rcols, _watchlist[i:i+5]):
+                    with col:
+                        st.markdown(f'<div style="font-size:12px;font-weight:600;text-align:center;">{tk}</div>', unsafe_allow_html=True)
+                        if st.button("✕", key=f"rm_watch_{tk}"):
+                            _watchlist.remove(tk)
+                            _prefs["watchlist"] = ",".join(_watchlist)
+                            st.session_state.prefs = _prefs; _save_prefs(_prefs); st.rerun()
+
+_raw_wl = st.session_state.prefs.get("watchlist","NVDA,AAPL,META,MSFT,AMZN,TSLA,AMD,LLY,JPM,XOM")
+hub_tickers = [t.strip().upper() for t in (_raw_wl if isinstance(_raw_wl,str) else ",".join(_raw_wl)).split(",") if t.strip()][:15]
+account_size = st.session_state.prefs.get("account_size", 25000)
 account_size = st.session_state.get("account_size", 25000)
 
 # ── PANEL 2: WHAT'S MOVING & WHY ─────────────────────────────────────────────

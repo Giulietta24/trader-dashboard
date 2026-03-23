@@ -1318,16 +1318,14 @@ with st.sidebar:
 
     remaining = max(0.0, credit_loaded - total_ever)
     pct_used  = min(100, int(total_ever / max(credit_loaded, 0.01) * 100))
-    months_left = credit_loaded / max(1.0/12, 1.0/12)  # ~$1/month
 
     cost_col = "#4ade80" if session_total < 0.01 else "#fbbf24" if session_total < 0.05 else "#f87171"
     rem_col  = "#4ade80" if remaining > credit_loaded*0.5 else "#fbbf24" if remaining > credit_loaded*0.2 else "#f87171"
-    months_remaining = int(remaining / max(1.0, 0.001))  # $1/month
+    bar_col  = rem_col if pct_used < 80 else "#f87171"
 
     st.markdown(f"""
     <div style="padding:0 4px;">
       <div style="font-size:10px;color:#93c5fd;font-weight:600;letter-spacing:.05em;text-transform:uppercase;margin-bottom:5px;">💰 AI Cost Tracker</div>
-
       <div style="background:#0f2d4a;border-radius:6px;padding:8px 10px;margin-bottom:6px;">
         <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:6px;">
           <div>
@@ -1337,22 +1335,16 @@ with st.sidebar:
           <div style="text-align:right;">
             <div style="font-size:10px;color:#93c5fd;margin-bottom:1px;">Remaining</div>
             <div style="font-size:18px;font-weight:700;color:{rem_col};">${remaining:.2f}</div>
-      </div>
-      <div style="background:#0f2d4a;border-radius:6px;padding:6px 10px;margin-bottom:6px;">
-        <div style="font-size:10px;color:#93c5fd;margin-bottom:2px;">All-time total spent</div>
-        <div style="font-size:15px;font-weight:700;color:#f87171;">${total_spent:.4f}</div>
           </div>
         </div>
         <div style="height:6px;background:#1e3a5f;border-radius:3px;overflow:hidden;margin-bottom:4px;">
-          <div style="height:6px;width:{pct_used}%;background:{rem_col if pct_used<80 else "#f87171"};border-radius:3px;"></div>
+          <div style="height:6px;width:{pct_used}%;background:{bar_col};border-radius:3px;"></div>
         </div>
         <div style="font-size:10px;color:#93c5fd;">{pct_used}% of ${credit_loaded:.2f} used</div>
       </div>
-
       <div style="font-size:10px;color:#6b7280;line-height:1.7;">
         This session: ${session_total:.4f} ({len(session_log)} calls)<br>
-        All time: {len(all_log)} calls tracked<br>
-        Est. ~$1/month · ~{int(remaining)} months left<br>
+        Est. ~$1/month · ~{max(0,int(remaining))} months left<br>
         <a href="https://console.anthropic.com/settings/billing" target="_blank"
            style="color:#93c5fd;text-decoration:none;">Top up at Anthropic ↗</a>
       </div>

@@ -1061,7 +1061,6 @@ def get_sector_etf_flow() -> dict:
         except: pass
     return out
 
-@st.cache_data(ttl=86400)
 def get_claude_trade_plans(signals_json: str, account_size: float,
                             vix: float, spy_1m: float,
                             date_str: str) -> dict:
@@ -2340,10 +2339,8 @@ with st.spinner(f"Scanning {len(SCAN_UNIVERSE)} stocks for options opportunities
 
 sector_perf_str = ", ".join([f"{k}:{v.get('1d',0):+.1f}%" for k,v in list((sectors or {}).items())[:8]])
 
-# Re-check key freshly in case it wasn't set when app first loaded
-_fresh_ant_key = _anthropic_key()
-if _fresh_ant_key:
-    ant_key = _fresh_ant_key  # update if now available
+# Always re-read key fresh here — never rely on cached value
+ant_key = _anthropic_key()
 
 if ant_key:
     # Build concise text summary of top 60 movers for Claude
@@ -3086,27 +3083,34 @@ st.markdown('<div style="font-size:11px;color:#9ca3af;font-weight:600;letter-spa
 
 if ant_key:
     if st.button("🤖 Generate Today's Trade Plans", key="gen_trades", type="primary", use_container_width=False):
-        # Build comprehensive signals JSON for Claude
+        # Build signals JSON — use safe fallbacks if panel data not yet loaded
+        _safe_moving  = moving_data  if "moving_data"  in dir() else []
+        _safe_iv      = iv_data      if "iv_data"      in dir() else {}
+        _safe_unusual = all_unusual  if "all_unusual"  in dir() else []
+        _safe_flow    = etf_flow     if "etf_flow"     in dir() else {}
+        _safe_si      = hub_si       if "hub_si"       in dir() else []
+        _safe_tech    = tech_data    if "tech_data"    in dir() else {}
+
         signals = {
             "date": today_str,
             "market": {"vix": vix_price, "spy_1m": spy_d.get("chg1m",0),
                        "regime": "Risk-On" if vix_price < 20 else "Risk-Off" if vix_price > 28 else "Neutral"},
             "price_momentum": {d["sym"]: {"chg1d": d["chg1d"], "chg1m": d["chg1m"],
                                            "vol_ratio": d["vol_ratio"], "above50dma": d["above50"]}
-                               for d in moving_data},
+                               for d in _safe_moving},
             "iv_rank": {sym: {"ivr": d["ivr"], "verdict": d["verdict"],
                                "near_earnings": d.get("near_earnings",False)}
-                        for sym, d in iv_data.items() if d},
+                        for sym, d in _safe_iv.items() if d},
             "unusual_options": [{"sym":u["sym"],"type":u["type"],"strike":u["strike"],
                                   "vol":u["vol"],"signal":u["signal"]}
-                                 for u in all_unusual[:10]],
+                                 for u in _safe_unusual[:10]],
             "sector_flow": {k:{"flow":v["flow"],"chg1d":v["chg1d"],"vol_ratio":v["vol_ratio"]}
-                           for k,v in (etf_flow or {}).items()},
+                           for k,v in (_safe_flow or {}).items()},
             "short_interest": {d["sym"]:{"si":d["si"],"dtc":d["dtc"],"momentum":d["mom"]}
-                               for d in (hub_si or [])},
+                               for d in (_safe_si or [])},
             "technicals": {sym:{"score":d["score"],"rsi":d["rsi"],"atr":d["atr"],
                                  "sma50":d["sma50"],"price":d["price"]}
-                           for sym,d in tech_data.items() if d and not d.get("error")},
+                           for sym,d in _safe_tech.items() if d and not d.get("error")},
         }
         # Convert all numpy/pandas types to native Python for JSON serialisation
         import numpy as np
@@ -3127,6 +3131,9 @@ if ant_key:
         if trade_plans:
             st.session_state["last_trade_plans"] = trade_plans
             st.session_state["last_trade_date"]  = today_str
+            st.rerun()
+        elif trade_plans == {}:
+            st.error("Claude returned no trade plans — check your Anthropic key is valid and has credit")
 
     # Display cached trade plans
     trade_plans = st.session_state.get("last_trade_plans", {})

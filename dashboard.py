@@ -2264,9 +2264,9 @@ def get_raw_movers(universe: tuple) -> list:
     out.sort(key=lambda x: -x["comp"])
     return out
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=3600)
 def build_options_themes(movers_text: str, sector_perf: str,
-                          vix: float, spy_1m: float, date_str: str) -> dict:
+                          vix: float, spy_1m: float, date_str: str) -> list:
     """
     Claude receives raw momentum data for 150 stocks.
     It does EVERYTHING: grouping, naming, Long Call/CSP/Long Put classification.
@@ -2340,6 +2340,11 @@ with st.spinner(f"Scanning {len(SCAN_UNIVERSE)} stocks for options opportunities
 
 sector_perf_str = ", ".join([f"{k}:{v.get('1d',0):+.1f}%" for k,v in list((sectors or {}).items())[:8]])
 
+# Re-check key freshly in case it wasn't set when app first loaded
+_fresh_ant_key = _anthropic_key()
+if _fresh_ant_key:
+    ant_key = _fresh_ant_key  # update if now available
+
 if ant_key:
     # Build concise text summary of top 60 movers for Claude
     top_up   = raw_movers[:30]
@@ -2357,7 +2362,13 @@ if ant_key:
             movers_text, sector_perf_str,
             vix_price, spy_d.get("chg1m", 0), today_str
         )
-    ai_themes = result.get("themes", [])
+    # build_options_themes returns a list directly
+    if isinstance(result, list):
+        ai_themes = result
+    elif isinstance(result, dict):
+        ai_themes = result.get("themes", [])
+    else:
+        ai_themes = []
 else:
     ai_themes = []
 

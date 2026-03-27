@@ -637,6 +637,7 @@ def get_top_movers(universe, top_n=60):
     return movers[:top_n]
 
 @st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400)
 def get_dynamic_themes(movers_json: str, sector_perf: str, vix: float,
                         spy_1m: float, date_str: str) -> list:
     """
@@ -1133,6 +1134,7 @@ Risk per trade: max 5% = ${account_size*0.05:,.0f}"""
         return {}
 
 @st.cache_data(ttl=1800)
+@st.cache_data(ttl=86400)
 def get_section_summary(section: str, data_summary: str, vix: float, date_str: str) -> str:
     """Claude writes a plain English summary of what a section's data means for traders."""
     key = _anthropic_key()
@@ -1200,6 +1202,7 @@ Be direct and specific. No bullet points. No jargon without explanation. Write a
     except: return ""
 
 @st.cache_data(ttl=1800)
+@st.cache_data(ttl=86400)
 def get_ai_options_analysis(spy_chg,qqq_chg,vix,spy_1m,qqq_1m,iwm_1m,sector_summary):
     key=_anthropic_key()
     if not key: return None
@@ -1689,7 +1692,9 @@ _idx_eem = idx.get("EEM",{}).get("chg1m",0)
 
 if ant_key:
     with st.spinner("Claude reading index data..."):
-        _idx_ai = get_section_summary("indexes", _idx_data_str, vix_price, today_str)
+        # Round values to reduce cache misses from tiny price fluctuations
+        _idx_vix_rounded = round(vix_price, 0)
+        _idx_ai = get_section_summary("indexes", _idx_data_str[:500], _idx_vix_rounded, today_str)
 else:
     # Rule-based fallback summary
     _breadth_ok = (_idx_rsp - _idx_spy) > 0
@@ -1770,7 +1775,8 @@ if cross:
 
         if ant_key:
             with st.spinner("Claude reading rotation signals..."):
-                _cross_ai = get_section_summary("cross", _cross_str, vix_price, today_str)
+                _cross_vix_rounded = round(vix_price, 0)
+                _cross_ai = get_section_summary("cross", _cross_str[:500], _cross_vix_rounded, today_str)
         else:
             # Rule-based fallback
             _c_parts = []
@@ -2264,6 +2270,7 @@ def get_raw_movers(universe: tuple) -> list:
     return out
 
 @st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def build_options_themes(movers_text: str, sector_perf: str,
                           vix: float, spy_1m: float, date_str: str) -> list:
     """
@@ -2586,9 +2593,10 @@ st.markdown(f'<div class="sec">🤖 AI Options Flow <span class="sec-badge {_ai_
 if ant_key:
     sector_summary=", ".join([f"{k}:{v.get('1d',0):+.1f}%" for k,v in list((sectors or {}).items())[:5]])
     with st.spinner("Claude analysing current options flow..."):
+        # Round to 1dp so tiny price moves don't break cache
         ai_opts=get_ai_options_analysis(
-            spy_d.get("chg1d",0), qqq_d.get("chg1d",0), vix_price,
-            spy_d.get("chg1m",0), qqq_d.get("chg1m",0), iwm_d.get("chg1m",0), sector_summary)
+            round(spy_d.get("chg1d",0),1), round(qqq_d.get("chg1d",0),1), round(vix_price,0),
+            round(spy_d.get("chg1m",0),1), round(qqq_d.get("chg1m",0),1), round(iwm_d.get("chg1m",0),1), sector_summary)
     if ai_opts:
         st.markdown(f"""
         <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:16px 18px;">

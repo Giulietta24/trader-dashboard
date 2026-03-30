@@ -637,7 +637,6 @@ def get_top_movers(universe, top_n=60):
     return movers[:top_n]
 
 @st.cache_data(ttl=86400)
-@st.cache_data(ttl=86400)
 def get_dynamic_themes(movers_json: str, sector_perf: str, vix: float,
                         spy_1m: float, date_str: str) -> list:
     """
@@ -1134,7 +1133,6 @@ Risk per trade: max 5% = ${account_size*0.05:,.0f}"""
         return {}
 
 @st.cache_data(ttl=1800)
-@st.cache_data(ttl=86400)
 def get_section_summary(section: str, data_summary: str, vix: float, date_str: str) -> str:
     """Claude writes a plain English summary of what a section's data means for traders."""
     key = _anthropic_key()
@@ -1202,7 +1200,6 @@ Be direct and specific. No bullet points. No jargon without explanation. Write a
     except: return ""
 
 @st.cache_data(ttl=1800)
-@st.cache_data(ttl=86400)
 def get_ai_options_analysis(spy_chg,qqq_chg,vix,spy_1m,qqq_1m,iwm_1m,sector_summary):
     key=_anthropic_key()
     if not key: return None
@@ -1690,11 +1687,12 @@ _idx_spy = idx.get("SPY",{}).get("chg1m",0)
 _idx_soxx= idx.get("SOXX",{}).get("chg1m",0)
 _idx_eem = idx.get("EEM",{}).get("chg1m",0)
 
-if ant_key:
-    with st.spinner("Claude reading index data..."):
-        # Round values to reduce cache misses from tiny price fluctuations
+_idx_ai = _get_daily("idx_summary")
+if ant_key and _idx_ai is None:
+    with st.spinner("Claude reading index data... (once per day)"):
         _idx_vix_rounded = round(vix_price, 0)
         _idx_ai = get_section_summary("indexes", _idx_data_str[:500], _idx_vix_rounded, today_str)
+        _set_daily("idx_summary", _idx_ai)
 else:
     # Rule-based fallback summary
     _breadth_ok = (_idx_rsp - _idx_spy) > 0
@@ -1773,10 +1771,12 @@ if cross:
         _tlt_spy = cross.get("TLT/SPY",{}).get(_period_key,0)
         _iwm_spy = cross.get("IWM/SPY",{}).get(_period_key,0)
 
-        if ant_key:
-            with st.spinner("Claude reading rotation signals..."):
+        _cross_ai = _get_daily("cross_summary")
+        if ant_key and _cross_ai is None:
+            with st.spinner("Claude reading rotation signals... (once per day)"):
                 _cross_vix_rounded = round(vix_price, 0)
                 _cross_ai = get_section_summary("cross", _cross_str[:500], _cross_vix_rounded, today_str)
+                _set_daily("cross_summary", _cross_ai)
         else:
             # Rule-based fallback
             _c_parts = []
@@ -2270,7 +2270,6 @@ def get_raw_movers(universe: tuple) -> list:
     return out
 
 @st.cache_data(ttl=3600)
-@st.cache_data(ttl=86400)
 def build_options_themes(movers_text: str, sector_perf: str,
                           vix: float, spy_1m: float, date_str: str) -> list:
     """
@@ -2349,8 +2348,8 @@ sector_perf_str = ", ".join([f"{k}:{v.get('1d',0):+.1f}%" for k,v in list((secto
 # Always re-read key fresh here — never rely on cached value
 ant_key = _anthropic_key()
 
-if ant_key:
-    # Build concise text summary of top 60 movers for Claude
+ai_themes = _get_daily("options_themes")  # check if already run today
+if ant_key and ai_themes is None:
     top_up   = raw_movers[:30]
     top_down = sorted(raw_movers, key=lambda x: x["comp"])[:15]
     mid      = [m for m in raw_movers if -3 < m["comp"] < 3][:15]
@@ -2360,20 +2359,11 @@ if ant_key:
     movers_text += "\n".join([f"  {m['sym']}: 1D={m['chg1d']:+.1f}% 1W={m['chg1w']:+.1f}% 1M={m['chg1m']:+.1f}% 3M={m['chg3m']:+.1f}%" for m in top_down])
     movers_text += "\n\nSIDEWAYS / RANGE (CSP candidates):\n"
     movers_text += "\n".join([f"  {m['sym']}: 1D={m['chg1d']:+.1f}% 1W={m['chg1w']:+.1f}% 1M={m['chg1m']:+.1f}% 3M={m['chg3m']:+.1f}%" for m in mid])
-
-    with st.spinner("Claude grouping stocks into options themes..."):
-        result = build_options_themes(
-            movers_text, sector_perf_str,
-            vix_price, spy_d.get("chg1m", 0), today_str
-        )
-    # build_options_themes returns a list directly
-    if isinstance(result, list):
-        ai_themes = result
-    elif isinstance(result, dict):
-        ai_themes = result.get("themes", [])
-    else:
-        ai_themes = []
-else:
+    with st.spinner("Claude grouping stocks into options themes... (runs once per day)"):
+        result = build_options_themes(movers_text, sector_perf_str, vix_price, spy_d.get("chg1m",0), today_str)
+    ai_themes = result if isinstance(result, list) else result.get("themes",[]) if isinstance(result,dict) else []
+    _set_daily("options_themes", ai_themes)
+elif ai_themes is None:
     ai_themes = []
 
 # ── DISPLAY ───────────────────────────────────────────────────────────────────
@@ -2591,12 +2581,15 @@ _ai_lbl = "AI Active · 30min refresh" if ant_key else "Add Anthropic key"
 st.markdown(f'<div class="sec">🤖 AI Options Flow <span class="sec-badge {_ai_cls}">{_ai_lbl}</span></div>', unsafe_allow_html=True)
 
 if ant_key:
-    sector_summary=", ".join([f"{k}:{v.get('1d',0):+.1f}%" for k,v in list((sectors or {}).items())[:5]])
-    with st.spinner("Claude analysing current options flow..."):
-        # Round to 1dp so tiny price moves don't break cache
-        ai_opts=get_ai_options_analysis(
-            round(spy_d.get("chg1d",0),1), round(qqq_d.get("chg1d",0),1), round(vix_price,0),
-            round(spy_d.get("chg1m",0),1), round(qqq_d.get("chg1m",0),1), round(iwm_d.get("chg1m",0),1), sector_summary)
+    ai_opts = _get_daily("options_analysis")
+    if ai_opts is None:
+        sector_summary=", ".join([f"{k}:{v.get('1d',0):+.1f}%" for k,v in list((sectors or {}).items())[:5]])
+        with st.spinner("Claude analysing options flow... (once per day)"):
+            ai_opts=get_ai_options_analysis(
+                round(spy_d.get("chg1d",0),1), round(qqq_d.get("chg1d",0),1), round(vix_price,0),
+                round(spy_d.get("chg1m",0),1), round(qqq_d.get("chg1m",0),1), round(iwm_d.get("chg1m",0),1),
+                ", ".join([f"{k}:{v.get('1d',0):+.1f}%" for k,v in list((sectors or {}).items())[:5]]))
+            _set_daily("options_analysis", ai_opts)
     if ai_opts:
         st.markdown(f"""
         <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:16px 18px;">

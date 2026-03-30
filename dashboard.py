@@ -113,8 +113,24 @@ st.set_page_config(page_title="Trader Intelligence Dashboard", page_icon="📊",
 if "custom_tickers"  not in st.session_state: st.session_state.custom_tickers  = {}
 if "approved_recs"   not in st.session_state: st.session_state.approved_recs   = {}
 if "hidden_themes"   not in st.session_state: st.session_state.hidden_themes   = []
+if "ai_daily_cache"  not in st.session_state: st.session_state.ai_daily_cache  = {}
 
-# ── PERSISTENT STORES (survive app restarts via /tmp/ file) ───────────────────
+def _get_daily(key: str):
+    """Return cached AI output for today, or None if not yet run today.
+    This is the ONLY correct way to cache AI calls — by date, not by arguments.
+    Prevents Claude firing on every Streamlit rerun."""
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    entry = st.session_state.ai_daily_cache.get(key, {})
+    if entry.get("date") == today:
+        return entry.get("value")
+    return None
+
+def _set_daily(key: str, value):
+    """Store AI output keyed by today's date — never fires twice in one day."""
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%Y-%m-%d")
+    st.session_state.ai_daily_cache[key] = {"date": today, "value": value}
 import os, pathlib, base64
 
 _COST_FILE  = pathlib.Path("/tmp/trader_dash_costs.json")

@@ -115,22 +115,54 @@ if "approved_recs"   not in st.session_state: st.session_state.approved_recs   =
 if "hidden_themes"   not in st.session_state: st.session_state.hidden_themes   = []
 if "ai_daily_cache"  not in st.session_state: st.session_state.ai_daily_cache  = {}
 
+# Daily AI cache stored in /tmp/ so it survives browser tab closes and reopens
+# Session state is cleared on every new browser session — /tmp/ is not
+_AI_CACHE_FILE = pathlib.Path("/tmp/trader_ai_daily_cache.json")
+
+def _load_ai_cache() -> dict:
+    try:
+        if _AI_CACHE_FILE.exists():
+            data = json.loads(_AI_CACHE_FILE.read_text())
+            # Only return if it's from today
+            today = datetime.now().strftime("%Y-%m-%d")
+            if data.get("_date") == today:
+                return data
+    except: pass
+    return {}
+
+def _save_ai_cache(cache: dict):
+    try:
+        cache["_date"] = datetime.now().strftime("%Y-%m-%d")
+        _AI_CACHE_FILE.write_text(json.dumps(cache, default=str))
+    except: pass
+
 def _get_daily(key: str):
     """Return cached AI output for today, or None if not yet run today.
-    This is the ONLY correct way to cache AI calls — by date, not by arguments.
-    Prevents Claude firing on every Streamlit rerun."""
-    from datetime import datetime as _dt
-    today = _dt.now().strftime("%Y-%m-%d")
+    Checks /tmp/ first (survives browser closes), then session state.
+    CRITICAL: This prevents Claude firing on every page load."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    # Check session state first (fastest)
     entry = st.session_state.ai_daily_cache.get(key, {})
     if entry.get("date") == today:
         return entry.get("value")
+    # Check /tmp/ file (survives browser tab closes)
+    file_cache = _load_ai_cache()
+    if key in file_cache:
+        # Restore to session state for speed
+        st.session_state.ai_daily_cache[key] = {"date": today, "value": file_cache[key]}
+        return file_cache[key]
     return None
 
 def _set_daily(key: str, value):
-    """Store AI output keyed by today's date — never fires twice in one day."""
-    from datetime import datetime as _dt
-    today = _dt.now().strftime("%Y-%m-%d")
+    """Store AI output — both session state AND /tmp/ file.
+    Session state = fast access this session
+    /tmp/ file = survives browser closes, prevents re-firing today"""
+    today = datetime.now().strftime("%Y-%m-%d")
     st.session_state.ai_daily_cache[key] = {"date": today, "value": value}
+    # Also write to /tmp/ file
+    file_cache = _load_ai_cache()
+    file_cache[key] = value
+    _save_ai_cache(file_cache)
 import os, pathlib, base64
 
 _COST_FILE  = pathlib.Path("/tmp/trader_dash_costs.json")
@@ -1678,11 +1710,14 @@ if ant_key and idx:
     for _sym in ["SPY","RSP","MDY","IWM","QQQ","SOXX","EFA","EEM","BTC-USD"]:
         _d = idx.get(_sym)
         if _d: _idx_lines.append(f"{_sym}: 1D={_d['chg1d']:+.2f}% 1M={_d['chg1m']:+.1f}% 3M={_d['chg3m']:+.1f}%")
-    with st.spinner("Claude analysing index picture..."):
-        _idx_summary = get_index_rotation_summary(
-            "\n".join(_idx_lines), "",
-            vix_price, spy_d.get("chg1m",0), today_str
-        )
+    _idx_summary = _get_daily("idx_rotation")
+    if _idx_summary is None:
+        with st.spinner("Claude analysing indexes... (once per day)"):
+            _idx_summary = get_index_rotation_summary(
+                "\n".join(_idx_lines), "",
+                vix_price, spy_d.get("chg1m",0), today_str
+            )
+            _set_daily("idx_rotation", _idx_summary)
     if _idx_summary:
         st.markdown(f"""
         <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 16px;margin:8px 0;">
@@ -1691,7 +1726,7 @@ if ant_key and idx:
         </div>""", unsafe_allow_html=True)
 
 
-# Index summary
+# Index data string (for rule-based fallback only — Claude already ran above)
 _idx_summary_data = []
 for sym in ["SPY","RSP","QQQ","SOXX","IWM","EFA","EEM","BTC-USD"]:
     d = idx.get(sym)
@@ -1787,28 +1822,27 @@ if cross:
         _tlt_spy = cross.get("TLT/SPY",{}).get(_period_key,0)
         _iwm_spy = cross.get("IWM/SPY",{}).get(_period_key,0)
 
-        _cross_ai = _get_daily("cross_summary")
-        if ant_key and _cross_ai is None:
-            with st.spinner("Claude reading rotation signals... (once per day)"):
-                _cross_vix_rounded = round(vix_price, 0)
-                _cross_ai = get_section_summary("cross", _cross_str[:500], _cross_vix_rounded, today_str)
-                _set_daily("cross_summary", _cross_ai)
-        else:
+        # Use rotation summary already generated — no second Claude call
+        _cross_ai = _get_daily("rotation_summary") or _get_daily("cross_summary")
+        if not _cross_ai:
             # Rule-based fallback
             _c_parts = []
 
-# Claude rotation summary
+# Claude rotation summary — once per day only
 if ant_key and cross:
-    _cross_lines = [f"{_ck} ({_cv['label']}): {_cv.get('chg_1m',0):+.2f}% 1M" for _ck, _cv in cross.items()]
-    with st.spinner("Claude analysing rotation signals..."):
-        _rot_summary = get_index_rotation_summary(
-            "", "\n".join(_cross_lines),
-            vix_price, spy_d.get("chg1m",0), today_str
-        )
+    _rot_summary = _get_daily("rotation_summary")
+    if _rot_summary is None:
+        _cross_lines = [f"{_ck} ({_cv['label']}): {_cv.get('chg_1m',0):+.2f}% 1M" for _ck, _cv in cross.items()]
+        with st.spinner("Claude analysing rotation... (once per day)"):
+            _rot_summary = get_index_rotation_summary(
+                "", "\n".join(_cross_lines),
+                vix_price, spy_d.get("chg1m",0), today_str
+            )
+            _set_daily("rotation_summary", _rot_summary)
     if _rot_summary:
         st.markdown(f"""
         <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:12px 16px;margin:8px 0;">
-          <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:6px;">🤖 ROTATION PICTURE — Where money is moving and what it means (Claude · cached 1hr)</div>
+          <div style="font-size:10px;font-weight:700;color:#1d4ed8;margin-bottom:6px;">🤖 ROTATION PICTURE — Where money is moving (Claude · once per day)</div>
           <div style="font-size:13px;color:#1e3a5f;line-height:1.7;">{_rot_summary}</div>
         </div>""", unsafe_allow_html=True)
 
